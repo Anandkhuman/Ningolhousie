@@ -1413,8 +1413,7 @@
             </tbody>
         </table>
        
-            
-       
+      
           <section class="panel" style="background: var(--secondary-bg-dash); width: 95%; margin: 1rem auto; border-color: var(--accent-color-dash);">
             <h2 class="panel-title" style="color: var(--light-text-dash); text-shadow: none; font-size: 1.2rem;">VIEW TICKET</h2>
             <div class="search-container" style="padding: 0 1rem 1rem 1rem;">
@@ -1608,6 +1607,2689 @@ function showView(viewId) {
         const isDashboard = viewId === 'adminDashboardView' || viewId === 'agentDashboardView';
         document.body.classList.toggle('dashboard-view-active', isDashboard);
     }
+}
+
+function handleRouting() {
+    const hash = window.location.hash.replace('#', '');
+    if (hash === 'admin' && currentUserRole === 'admin') {
+        showView('adminDashboardView');
+    } else if (hash === 'agent' && currentUserRole === 'agent') {
+        showView('agentDashboardView');
+    } else if (hash === 'book') {
+        showView('ticketBookingView');
+    } else {
+        showView('publicView');
+    }
+}
+
+window.addEventListener('hashchange', handleRouting);
+
+function showNotification(message, type = 'info', duration = 4000) {
+    const now = Date.now();
+    const cooldown = 5000;
+
+    if (
+        message === lastNotification.message &&
+        type === lastNotification.type &&
+        (now - lastNotification.timestamp) < cooldown
+    ) {
+        return;
+    }
+
+    const container = document.getElementById('notification-container');
+    const existingNotifs = container.querySelectorAll('.notification');
+    for (const notif of existingNotifs) {
+        if (notif.textContent === message && notif.classList.contains(type)) {
+            return;
+        }
+    }
+
+    lastNotification = { message, type, timestamp: now };
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.textContent = message;
+    container.appendChild(notification);
+
+    setTimeout(() => {
+        notification.classList.add('show');
+    }, 10);
+
+    setTimeout(() => {
+        notification.classList.remove('show');
+        notification.addEventListener('transitionend', () => notification.remove());
+    }, duration);
+}
+
+async function triggerGlobalNotification(message, type = 'info') {
+    try {
+        await db.ref('gameState/lastAction').set({
+            message: message,
+            type: type,
+            timestamp: firebase.database.ServerValue.TIMESTAMP
+        });
+    } catch (e) {
+        console.error('Error triggering global notification:', e);
+    }
+}
+
+auth.onAuthStateChanged(async (user) => {
+    currentUser = user;
+    if (user) {
+        try {
+            const userSnapshot = await db.ref('users/' + user.uid).once('value');
+            const userData = userSnapshot.val();
+            currentUserRole = userData ? userData.role : null;
+            if (!currentUserRole) throw new Error("User role not found in database.");
+            updateUIAfterLogin();
+        } catch (error) {
+            console.error("Authentication state error:", error.message, "Logging out.");
+            showNotification(`Auth Error: ${error.message}`, 'error');
+            logout();
+        }
+    } else {
+        currentUserRole = null;
+        updateUIAfterLogout();
+    }
+
+    if (!authInitialized) {
+        authInitialized = true;
+        setupRealtimeListeners();
+    }
+    handleRouting();
+});
+
+async function loginUser(expectedRole) {
+    const emailEl = document.getElementById('loginEmailInp');
+    const passEl = document.getElementById('loginPassInp');
+    if (!emailEl.value || !passEl.value) return showNotification('Please fill all fields.', 'error');
+
+    try {
+        const userCredential = await auth.signInWithEmailAndPassword(emailEl.value, passEl.value);
+        const userSnapshot = await db.ref('users/' + userCredential.user.uid).once('value');
+        const userData = userSnapshot.val();
+        if (userData && userData.role === expectedRole) {
+            showNotification(`Login successful as ${expectedRole}!`, 'success');
+            closePopups();
+        } else {
+            await auth.signOut();
+            showNotification(`Login failed: This is not a valid ${expectedRole} account.`, 'error');
+        }
+    } catch (error) {
+        showNotification(`Login Error: ${error.message}`, 'error');
+    }
+}
+
+async function signupUser() {
+    const name = document.getElementById('signupNameInp').value.trim();
+    const email = document.getElementById('signupEmailInp').value.trim();
+    const phone = document.getElementById('signupPhoneInp').value.trim();
+    const pass = document.getElementById('signupPassInp').value;
+    if (!name || !email || !phone || !pass) return showNotification('Please fill all fields.', 'error');
+
+    try {
+        const role = 'admin';
+        const userCredential = await auth.createUserWithEmailAndPassword(email, pass);
+        const user = userCredential.user;
+        await user.updateProfile({ displayName: name });
+
+        await db.ref('users/' + user.uid).set({
+            name, email, phone, role,
+            createdAt: firebase.database.ServerValue.TIMESTAMP
+        });
+
+        showNotification(`Admin account created. Please log in.`, 'success');
+        await auth.signOut();
+        showLoginForm();
+    } catch (error) {
+        showNotification(`Signup Error: ${error.message}`, 'error');
+    }
+}
+
+function logout() {
+    auth.signOut().then(() => {
+        showNotification("You have been logged out.", "info");
+    });
+}
+
+async function handleForgotPassword(e) {
+    e.preventDefault(); 
+    const emailEl = document.getElementById('loginEmailInp');
+    const email = emailEl.value.trim();
+
+    if (!email) {
+        showNotification('Please enter your email address in the email field first.', 'error');
+        emailEl.focus();
+        return;
+    }
+
+    try {
+        await auth.sendPasswordResetEmail(email);
+        showNotification(`Password reset link sent to ${email}. Please check your inbox (and spam folder).`, 'success');
+        closePopups();
+    } catch (error) {
+        console.error("Forgot Password Error:", error);
+        showNotification(`Error sending reset email: ${error.message}`, 'error');
+    }
+}
+
+function bindEventListeners() {
+    document.querySelectorAll('.x-button').forEach(btn => btn.addEventListener('click', closePopups));
+    document.getElementById('showLoginFormBtn').addEventListener('click', showLoginForm);
+    document.getElementById('adminLoginBtn').addEventListener('click', () => loginUser('admin'));
+    document.getElementById('agentLoginBtn').addEventListener('click', () => loginUser('agent'));
+    document.getElementById('signupActionBtn').addEventListener('click', signupUser);
+    document.getElementById('forgotPasswordLink').addEventListener('click', handleForgotPassword);
+    document.querySelectorAll('#publicLogoutBtn, #bookingLogoutBtn').forEach(btn => btn.addEventListener('click', logout));
+    document.getElementById('showAgentsBtn').addEventListener('click', showAgentListPopup);
+    document.getElementById('showAgentListBtn-booking').addEventListener('click', showAgentListPopup);
+    document.querySelectorAll('#publicLoginBtn, #bookingLoginBtn').forEach(btn => btn.addEventListener('click', () => showPopup('loginPopup')));
+    document.getElementById('searchBtn').addEventListener('click', () => searchTicketPublic());
+    document.getElementById('ticketSearchInp').addEventListener('keyup', e => { if (e.key === "Enter") searchTicketPublic(); });
+    document.getElementById('clearAllSearchBtn').addEventListener('click', () => {
+        document.getElementById('ticketDisplayArea').innerHTML = '';
+        displayedSearchPhones.clear();
+    });
+    document.getElementById('navigateToBooking').addEventListener('click', (e) => { e.preventDefault(); window.location.hash = 'book'; });
+    document.getElementById('navigateToGame').addEventListener('click', (e) => { e.preventDefault(); window.location.hash = 'game'; });
+    document.getElementById('requestBookingBtn').addEventListener('click', handlePublicBookingRequest);
+    document.getElementById('checkAvailabilityBtn').addEventListener('click', () => {
+        renderPublicBookingGrid();
+        showPopup('publicBookingPopup');
+    });
+    document.getElementById('publicRequestBookingBtn').addEventListener('click', handlePublicPopupBookingRequest);
+    document.getElementById('saveOwnerChangesBtn').addEventListener('click', saveTicketOwnerChanges);
+    document.getElementById('closeFirstVisitPopupBtn').addEventListener('click', closePopups);
+    document.getElementById('adminSearchTicketBtn').addEventListener('click', searchTicketAdmin);
+    document.getElementById('adminTicketSearchInp').addEventListener('keyup', e => { if (e.key === "Enter") searchTicketAdmin(); });
+    document.getElementById('adminClearSearchBtn').addEventListener('click', () => {
+        document.getElementById('adminTicketDisplayArea').innerHTML = '';
+        adminDisplayedSearchPhones.clear();
+    });
+}
+
+function showPopup(id) {
+    const popup = document.getElementById(id);
+    if (popup) {
+        popup.style.display = popup.classList.contains('overlay-popup') ? 'flex' : 'block';
+        setTimeout(() => popup.classList.add('active'), 10);
+    }
+}
+
+function closePopups() {
+    document.querySelectorAll('.overlay-popup, .gamePopDiv').forEach(p => {
+        p.classList.remove('active');
+        setTimeout(() => { p.style.display = 'none'; }, 650);
+    });
+}
+
+function showLoginForm() { document.getElementById('loginForm').style.display = 'block'; document.getElementById('signupForm').style.display = 'none'; }
+function showSignupForm() { document.getElementById('loginForm').style.display = 'none'; document.getElementById('signupForm').style.display = 'block'; }
+
+function showAgentListPopup() {
+    const container = document.getElementById('agentListContainer');
+    container.innerHTML = '';
+
+    const agents = allUsersData.filter(u => u.role === 'admin' || u.role === 'agent');
+    if (agents.length > 0) {
+        agents.forEach(agent => {
+            const phone = agent.phone.replace(/\D/g, '');
+            const link = document.createElement('a');
+            link.href = `https://wa.me/${phone}`;
+            link.target = '_blank';
+            link.innerHTML = `${agent.name}<i class="fab fa-whatsapp"></i>`;
+            container.appendChild(link);
+        });
+    } else { container.innerHTML = '<p>No agents available.</p>'; }
+    showPopup('agentListPopup');
+}
+
+function setupRealtimeListeners() {
+    Object.values(listeners).forEach(ref => ref.off());
+
+    listeners.settings = db.ref('settings/gameConfig');
+    listeners.settings.on('value', snapshot => {
+        gameSettingsData = snapshot.val() || {};
+        updateAllUIsWithSettings(gameSettingsData);
+        updateTicketRelatedUIs();
+    }, err => { console.error("Settings listener error:", err); showNotification('Could not load game settings.', 'error'); });
+
+    listeners.gameState = db.ref('gameState/currentState');
+    listeners.gameState.on('value', snapshot => {
+        const data = snapshot.val() || {};
+        const newNumbers = data.calledNumbers || [];
+        if (newNumbers.length > currentCalledNumbers.length) {
+            const newNum = newNumbers[newNumbers.length - 1];
+            if (newNum !== lastAnnouncedNumber && !isAnnouncing) {
+                if (currentView === 'publicView' || currentView === 'ticketBookingView') {
+                    announceNumber(newNum);
+                }
+            }
+        }
+        currentCalledNumbers = newNumbers;
+
+        const newWinners = data.winners || {};
+
+        if (isInitialWinnerLoad) {
+            knownWinners = newWinners;
+            isInitialWinnerLoad = false;
+        } else {
+            for (const dividendName in newWinners) {
+                const newWinnerArray = newWinners[dividendName] || [];
+                const oldWinnerArray = knownWinners[dividendName] || [];
+
+                const oldWinnerTicketIds = new Set(oldWinnerArray.map(w => w.ticketId));
+                const justAnnouncedWinners = newWinnerArray.filter(w => !oldWinnerTicketIds.has(w.ticketId));
+
+                if (justAnnouncedWinners.length > 0) {
+                    const winnerNames = justAnnouncedWinners.map(w => `${w.name} (Tkt: ${w.ticketId})`).join(', ');
+                    const msg = `${winnerNames} has won ${dividendName}!`;
+                    
+                    triggerGlobalNotification(msg, 'success');
+                    
+                    const soundFile = dividendSoundMap[dividendName];
+                    if (soundFile) {
+                        playSound(audioBaseUrl + soundFile);
+                    }
+                }
+            }
+            knownWinners = newWinners;
+        }
+
+        updateGameRelatedUIs(data); 
+    }, err => { console.error("GameState listener error:", err); showNotification('Could not load game state.', 'error'); });
+
+    listeners.tickets = db.ref('tickets');
+    listeners.tickets.on('value', snapshot => {
+        const ticketsObject = snapshot.val();
+        allTicketsData = ticketsObject ? Object.values(ticketsObject) : [];
+        updateTicketRelatedUIs();
+    }, err => { console.error("Tickets listener error:", err); showNotification('Could not load tickets.', 'error'); });
+
+    listeners.users = db.ref('users');
+    listeners.users.on('value', snapshot => {
+        const usersObject = snapshot.val();
+        allUsersData = usersObject ? Object.entries(usersObject).map(([uid, data]) => ({ uid, ...data })) : [];
+        updateUserRelatedUIs();
+    }, err => { console.error("Users listener error:", err); showNotification('Could not load user data.', 'error'); });
+
+    let isFirstNotificationRead = true;
+    listeners.globalNotifications = db.ref('gameState/lastAction');
+    listeners.globalNotifications.on('value', snapshot => {
+        if (isFirstNotificationRead || !snapshot.exists()) {
+            isFirstNotificationRead = false; return;
+        }
+        const data = snapshot.val();
+        const notificationAge = Date.now() - data.timestamp;
+        if (notificationAge < 15000) {
+            showNotification(data.message, data.type);
+        }
+    }, err => console.error("Global notification listener error:", err));
+}
+
+function updateAllUIsWithSettings(data) {
+    document.getElementById('whatsappGroupLink').href = data.whatsappLink || '#';
+    updateCountdownTimers(data.gameDateTime);
+    populateDividendList(data.dividends || []);
+    if (currentUserRole === 'admin') updateAdminSettingsUI(data);
+    if (currentUserRole === 'agent') updateAgentInfoUI();
+    updateBusinessInfo();
+}
+
+function updateGameRelatedUIs(gameState) {
+    const calledNums = gameState.calledNumbers || [];
+    const winners = gameState.winners || {};
+    
+    updateNumberBoard(calledNums);
+    updateCalledNumbersList(calledNums);
+    updateWinners(winners);
+    updateDisplayedTicketPublic();
+    if (currentUserRole === 'admin') {
+        updateRunGameUI(gameState);
+        updateAdminDisplayedTickets();
+    }
+}
+
+function updateTicketRelatedUIs() {
+    renderVisualTicketBookingPage();
+    renderSheetWiseBookedList();
+    if (document.getElementById('ticketDisplayArea').innerHTML) {
+        const currentPhones = Array.from(displayedSearchPhones);
+        document.getElementById('ticketDisplayArea').innerHTML = '';
+        displayedSearchPhones.clear();
+        currentPhones.forEach(phone => searchTicketPublic(phone, true));
+    }
+    if (currentUserRole === 'admin') {
+        updateAdminList();
+        updateBusinessInfo(); 
+    }
+    if (currentUserRole === 'agent') {
+        showAgentSoldTickets();
+        updateAgentInfoUI(); 
+    }
+    updateDashboardBookingPopup();
+    if (document.getElementById('publicBookingPopup').classList.contains('active')) {
+        renderPublicBookingGrid(); 
+    }
+}
+function updateUserRelatedUIs() {
+    if (currentUserRole === 'admin') { updateAdminList(); updateAdminInfoUI(); }
+    if (currentUserRole === 'agent') { updateAgentInfoUI(); }
+}
+
+function updateUIAfterLogin() {
+    document.querySelectorAll('#publicLoginBtn, #bookingLoginBtn').forEach(btn => btn.style.display = 'none');
+    document.querySelectorAll('#publicLogoutBtn, #bookingLogoutBtn').forEach(btn => btn.style.display = 'flex');
+    const addDashLink = (bar, role) => {
+        bar.querySelector('.dashboard-link')?.remove();
+        const link = document.createElement('a');
+        link.href = `#${role}`;
+        link.className = 'icon-btn dashboard-link';
+        link.innerHTML = `<i class="fas fa-user-shield"></i><span>Dashboard</span>`;
+        bar.appendChild(link);
+    };
+    if (currentUserRole) {
+        addDashLink(document.getElementById('public-icon-bar'), currentUserRole);
+        addDashLink(document.getElementById('booking-icon-bar'), currentUserRole);
+    }
+}
+
+function updateUIAfterLogout() {
+    document.querySelectorAll('#publicLoginBtn, #bookingLoginBtn').forEach(btn => btn.style.display = 'flex');
+    document.querySelectorAll('#publicLogoutBtn, #bookingLogoutBtn').forEach(btn => btn.style.display = 'none');
+    document.querySelectorAll('.dashboard-link').forEach(link => link.remove());
+}
+
+function checkSheetSelection(selectedIds) {
+    const count = selectedIds.length;
+    if (count === 0) {
+        return { valid: false, message: "" };
+    }
+
+    const sheets = {};
+    for (const id of selectedIds) {
+        const sheetNum = Math.floor((id - 1) / 6);
+        if (!sheets[sheetNum]) {
+            sheets[sheetNum] = [];
+        }
+        sheets[sheetNum].push(id);
+    }
+
+    let fullSheetCount = 0;
+    let halfSheetCount = 0;
+    let randomCount = 0;
+
+    for (const sheetNum in sheets) {
+        const ticketsInSheet = sheets[sheetNum].sort((a, b) => a - b);
+        const len = ticketsInSheet.length;
+        const sheetStartId = parseInt(sheetNum) * 6 + 1;
+
+        if (len === 6) {
+            fullSheetCount++;
+        } else if (len === 3) {
+            const firstId = ticketsInSheet[0];
+            const isFirstHalf = (firstId === sheetStartId) &&
+                (ticketsInSheet[1] === sheetStartId + 1) &&
+                (ticketsInSheet[2] === sheetStartId + 2);
+            const isLastHalf = (firstId === sheetStartId + 3) &&
+                (ticketsInSheet[1] === sheetStartId + 4) &&
+                (ticketsInSheet[2] === sheetStartId + 5);
+
+            if (isFirstHalf || isLastHalf) {
+                halfSheetCount++;
+            } else {
+                randomCount += 3;
+            }
+        } else {
+            randomCount += len;
+        }
+    }
+
+    const parts = [];
+    if (fullSheetCount > 0) {
+        parts.push(`${fullSheetCount} Full Sheet${fullSheetCount > 1 ? 's' : ''}`);
+    }
+    if (halfSheetCount > 0) {
+        parts.push(`${halfSheetCount} Half Sheet${halfSheetCount > 1 ? 's' : ''}`);
+    }
+    if (randomCount > 0) {
+        parts.push(`${randomCount} Random Ticket${randomCount > 1 ? 's' : ''}`);
+    }
+
+    if (parts.length === 0) {
+        return { valid: false, message: "Select your tickets." };
+    }
+
+    const message = parts.join(' & ') + ' Selected';
+    return { valid: true, message: message };
+}
+function generateNumberBoard() {
+    const publicBoard = document.getElementById('numberBoard');
+    const adminPopupBoard = document.getElementById('runGamePopupBoard');
+
+    let boardHtml = '';
+    for(let i = 1; i <= 90; i++) {
+        boardHtml += `<div class="num-cell" id="num-${i}">${i}</div>`;
+    }
+
+    let adminPopupBoardHtml = '';
+    for(let i = 1; i <= 90; i++) {
+        adminPopupBoardHtml += `<div class="num-cell" id="run-game-popup-num-${i}">${i}</div>`;
+    }
+
+    if(publicBoard) publicBoard.innerHTML = boardHtml;
+    if(adminPopupBoard) adminPopupBoard.innerHTML = adminPopupBoardHtml;
+}
+
+function announceNumber(number) {
+    isAnnouncing = true;
+    lastAnnouncedNumber = number;
+    
+    playSound(audioBaseUrl + number + '.mp3');
+
+    const overlay = document.getElementById('number-announcement-overlay');
+    const numberDisplay = document.getElementById('announced-number-display');
+    if (!overlay || !numberDisplay) { isAnnouncing = false; return; }
+
+    gsap.timeline({ onComplete: () => { isAnnouncing = false; } })
+      .set(overlay, { display: 'flex' })
+      .set(numberDisplay, { textContent: number, y: '50%', scale: 0.5, autoAlpha: 0 })
+      .to(overlay, { autoAlpha: 1, duration: 0.3 })
+      .to(numberDisplay, { y: '0%', scale: 1, autoAlpha: 1, duration: 0.8, ease: 'elastic.out(1, 0.6)' }, '-=0.1')
+      .to(numberDisplay, { duration: 1.5 }, '+=0.2')
+      .to(overlay, { autoAlpha: 0, duration: 0.5, onComplete: () => overlay.style.display = 'none' }, '+=0.5');
+}
+
+function updateCountdownTimers(targetDateString) {
+    if (countdownInterval) clearInterval(countdownInterval);
+    const targetDate = new Date(targetDateString).getTime();
+    
+    const timerBars = [
+        document.getElementById('public-timer-bar'),
+        document.getElementById('booking-timer-bar'),
+        document.getElementById('runGame-timer-bar')
+    ];
+
+    if (!targetDateString || isNaN(targetDate)) {
+        gameLiveSoundPlayed = false;
+        const waitingHTML = `<div class="info-item"><i class="fas fa-hourglass-half"></i><span>Awaiting Game Schedule</span></div>`;
+        timerBars.forEach(bar => { if(bar) bar.innerHTML = waitingHTML; });
+        return;
+    }
+
+    const date = new Date(targetDate);
+    const dateText = date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    const timeText = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+    const update = () => {
+        const distance = targetDate - new Date().getTime();
+        let countdownText;
+        if (distance < 0) {
+            clearInterval(countdownInterval);
+            countdownText = 'Game is in Progress!';
+            if (!gameLiveSoundPlayed) {
+                playSound(audioBaseUrl + "GAMEISLIVE.mp3");
+                gameLiveSoundPlayed = true;
+            }
+        } else {
+            const d = Math.floor(distance / 86400000).toString().padStart(2, '0');
+            const h = Math.floor((distance % 86400000) / 3600000).toString().padStart(2, '0');
+            const m = Math.floor((distance % 3600000) / 60000).toString().padStart(2, '0');
+            const s = Math.floor((distance % 60000) / 1000).toString().padStart(2, '0');
+            countdownText = `${d}d ${h}h ${m}m ${s}s`;
+        }
+        const timerHTML = `
+            <div class="info-item"><i class="fas fa-calendar-alt"></i><span>${dateText}</span></div>
+            <div class="info-item"><i class="fas fa-clock"></i><span>${timeText}</span></div>
+            <div class="info-item"><i class="fas fa-hourglass-start"></i><span>${countdownText}</span></div>`;
+        timerBars.forEach(bar => { if(bar) bar.innerHTML = timerHTML; });
+    };
+    update();
+    countdownInterval = setInterval(update, 1000);
+}
+
+function renderVisualTicketBookingPage() {
+    const gridContainer = document.getElementById('bookingGridContainer');
+    if (!gridContainer) return;
+    gridContainer.innerHTML = '';
+
+    if (currentView === 'ticketBookingView') {
+        publicSelectedTickets = [];
+        updatePublicSelectionIndicator();
+    }
+
+    const totalTickets = gameSettingsData.totalTickets || 0;
+    if (allTicketsData.length === 0 || totalTickets === 0) {
+        gridContainer.innerHTML = '<p style="text-align: center;">Tickets have not been generated by the admin yet.</p>';
+        return;
+    }
+
+    const ticketsMap = new Map(allTicketsData.map(t => [t.id, t]));
+    const numSheets = Math.ceil(totalTickets / 6);
+
+    for (let i = 0; i < numSheets; i++) {
+        const startTicketId = i * 6 + 1;
+        const endTicketId = startTicketId + 5;
+        const sheetWrapper = document.createElement('div');
+        sheetWrapper.className = 'sheet-view';
+
+        const sheetHeader = document.createElement('div');
+        sheetHeader.className = 'sheet-header';
+        sheetHeader.innerHTML = `
+            <span>Sheet ${i + 1} (Tkt ${startTicketId}-${endTicketId})</span>
+            <label class="full-sheet-selector">
+                <input type="checkbox" onchange="selectFullSheet(this, ${startTicketId}, ${endTicketId})"> Select Full
+            </label>`;
+        sheetWrapper.appendChild(sheetHeader);
+
+        const sheetContent = document.createElement('div');
+        sheetContent.className = 'sheet-content';
+        sheetWrapper.appendChild(sheetContent);
+
+        for (let j = startTicketId; j <= endTicketId; j++) {
+            const ticket = ticketsMap.get(j);
+            const ticketView = document.createElement('div');
+            ticketView.id = `booking-ticket-${j}`;
+            ticketView.className = 'ticket-view';
+            if (ticket && ticket.is_sold) {
+                ticketView.classList.add('sold');
+            } else {
+                ticketView.onclick = () => togglePublicTicketSelection(j);
+            }
+
+            let headerHTML = `<div class="ticket-header">Ticket #${j}</div>`;
+            let gridHTML = '';
+
+            if (ticket) {
+                if (Array.isArray(ticket.numbers) && ticket.numbers.length > 0) {
+                    gridHTML = ticket.numbers.flat().map(n =>
+                        `<div class="ticket-num ${n > 0 ? '' : 'empty'}" data-num="${n}">${n > 0 ? n : ''}</div>`
+                    ).join('');
+                } else {
+                    gridHTML = '<p style="text-align:center; padding: 1rem; color: red;">Visual ticket data missing.</p>';
+                }
+            } else {
+                gridHTML = '<p style="text-align:center; padding: 1rem;">Data missing</p>';
+            }
+
+            ticketView.innerHTML = `${headerHTML}<div class="ticket-grid">${gridHTML}</div>`;
+            sheetContent.appendChild(ticketView);
+        }
+        gridContainer.appendChild(sheetWrapper);
+    }
+}
+
+function selectFullSheet(checkbox, startId, endId) {
+    for (let id = startId; id <= endId; id++) {
+        const ticketView = document.getElementById(`booking-ticket-${id}`);
+        if (ticketView && !ticketView.classList.contains('sold')) {
+            const isSelected = publicSelectedTickets.includes(id);
+            if (checkbox.checked && !isSelected) {
+                togglePublicTicketSelection(id);
+            } else if (!checkbox.checked && isSelected) {
+                togglePublicTicketSelection(id);
+            }
+        }
+    }
+}
+
+function togglePublicTicketSelection(ticketId) {
+    const ticketView = document.getElementById(`booking-ticket-${ticketId}`);
+    if (!ticketView || ticketView.classList.contains('sold')) return;
+
+    const index = publicSelectedTickets.indexOf(ticketId);
+    if (index > -1) {
+        publicSelectedTickets.splice(index, 1);
+        ticketView.classList.remove('selected');
+    } else {
+        publicSelectedTickets.push(ticketId);
+        ticketView.classList.add('selected');
+    }
+    updatePublicSelectionIndicator();
+}
+
+function updatePublicSelectionIndicator() {
+    const indicator = document.getElementById('publicSelectionIndicator');
+    if (!indicator) return;
+    const result = checkSheetSelection(publicSelectedTickets);
+    indicator.textContent = result.message;
+    indicator.style.borderColor = result.valid ? 'var(--accent-primary)' : 'var(--accent-secondary)';
+}
+
+function handlePublicBookingRequest() {
+    const name = document.getElementById('bookerName').value.trim();
+    const phone = document.getElementById('bookerPhone').value.trim();
+    if (!name || !phone) return showNotification('Please enter your name and mobile number.', 'error');
+    if (publicSelectedTickets.length === 0) return showNotification('Please select at least one ticket.', 'error');
+
+    openAgentSelectorForWhatsApp(name, phone, publicSelectedTickets);
+}
+
+function openAgentSelectorForWhatsApp(userName, userPhone, selectedTickets) {
+    const container = document.getElementById('bookingAgentListContainer');
+    container.innerHTML = '';
+    const agents = allUsersData.filter(u => u.role === 'admin' || u.role === 'agent');
+    if (agents.length > 0) {
+        agents.forEach(agent => {
+            const link = document.createElement('a');
+            link.href = '#';
+            link.onclick = (e) => { e.preventDefault(); redirectToWhatsApp(agent.phone, userName, userPhone, selectedTickets); };
+            link.innerHTML = `${agent.name}<i class="fab fa-whatsapp"></i>`;
+            container.appendChild(link);
+        });
+        showPopup('agentSelectionPopup');
+    } else {
+        showNotification('No agents are available to handle bookings.', 'info');
+    }
+}
+
+function redirectToWhatsApp(agentPhone, userName, userPhone, ticketIds) {
+    const ticketNumbers = ticketIds.sort((a, b) => a - b).join(', ');
+    const message = `Hello, I would like to book tickets.\n\n*Name*: ${userName}\n*Phone*: ${userPhone}\n*Selected Tickets*: ${ticketNumbers}`;
+    const cleanPhone = agentPhone.replace(/\D/g, '');
+    window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
+    closePopups();
+}
+
+function searchTicketPublic(searchTermOverride = null, isRerender = false) {
+    const searchTerm = searchTermOverride || document.getElementById('ticketSearchInp').value.trim();
+    if (!searchTerm) return;
+    
+    let ticketsToDisplay = [];
+    const searchNumber = parseInt(searchTerm, 10);
+
+    if (!isNaN(searchNumber) && searchTerm.toString().match(/^\d+$/)) {
+        const initialTicket = allTicketsData.find(t => t.id === searchNumber && t.is_sold);
+        if (initialTicket) {
+            ticketsToDisplay = allTicketsData.filter(t => t.is_sold && t.owner_phone === initialTicket.owner_phone);
+        }
+    } else {
+        const lowerCaseSearchTerm = searchTerm.toLowerCase();
+        ticketsToDisplay = allTicketsData.filter(t => t.is_sold &&
+            ((t.owner_name_lower || '').includes(lowerCaseSearchTerm) || (t.owner_phone || '').includes(lowerCaseSearchTerm))
+        );
+    }
+    
+    if (ticketsToDisplay.length > 0) {
+        const ownerPhone = ticketsToDisplay[0].owner_phone;
+        const ownerName = ticketsToDisplay[0].owner_name;
+
+        if (displayedSearchPhones.has(ownerPhone) && !isRerender) {
+            showNotification(`${ownerName}'s tickets are already displayed.`, 'info');
+            return;
+        }
+        
+        displayedSearchPhones.add(ownerPhone);
+
+        const groupWrapper = document.createElement('div');
+        groupWrapper.className = 'search-result-group';
+        groupWrapper.dataset.phone = ownerPhone;
+        
+        let ticketsHTML = '';
+        ticketsToDisplay.sort((a, b) => a.id - b.id).forEach(ticket => {
+            let gridHTML;
+            if (ticket && Array.isArray(ticket.numbers) && ticket.numbers.length > 0) {
+                 gridHTML = ticket.numbers.flat().map(n =>
+                    `<div class="ticket-num ${n > 0 ? '' : 'empty'}" data-num="${n}">${n > 0 ? n : ''}</div>`
+                ).join('');
+            } else {
+                gridHTML = '<p style="text-align:center; padding: 1rem; color: red;">Visual ticket data missing.</p>';
+            }
+            
+            ticketsHTML += `<div class="ticket-view" data-ticket-id="${ticket.id}">
+                        <div class="ticket-header">Ticket #${ticket.id}: ${ticket.owner_name}</div>
+                        <div class="ticket-grid">${gridHTML}</div>
+                    </div>`;
+        });
+
+        groupWrapper.innerHTML = `<button class="clear-search-btn" onclick="clearSearchResult('${ownerPhone}')" title="Clear this result">&times;</button>${ticketsHTML}`;
+        document.getElementById('ticketDisplayArea').appendChild(groupWrapper);
+        updateDisplayedTicketPublic();
+    } else if (!isRerender) {
+        showNotification('No tickets found for that search term.', 'error');
+    }
+}
+
+function clearSearchResult(phone) {
+    const group = document.querySelector(`.search-result-group[data-phone="${phone}"]`);
+    if (group) group.remove();
+    displayedSearchPhones.delete(phone);
+}
+
+function updateDisplayedTicketPublic() {
+    document.querySelectorAll('#ticketDisplayArea .ticket-view, #bookedTicketsDisplay .ticket-view').forEach(ticketView => {
+        ticketView.querySelectorAll('.ticket-num[data-num]').forEach(cell => {
+            const num = parseInt(cell.dataset.num, 10);
+            if (num > 0) {
+                 const isCalled = currentCalledNumbers.includes(num);
+                 cell.classList.toggle('ticked', isCalled);
+                cell.classList.remove('last-called-highlight');
+                if (num === lastAnnouncedNumber) {
+                     cell.classList.add('last-called-highlight');
+                }
+            }
+        });
+    });
+}
+
+function populateDividendList(dividends) {
+    const tbodies = document.querySelectorAll('#dividendListTable tbody, #runGameDividendTable tbody');
+    if(tbodies.length === 0) return;
+    
+    const rowsHTML = (dividends || [])
+        .map(d => `<tr data-dividend-name="${d.name.replace(/\s+/g, '-')}">
+                      <td>${d.name} <span style="font-size:0.8em; color: var(--text-secondary);">(₹${d.amount || 0})</span></td>
+                      <td class="winner-info"><span class="winner-name">Pending...</span></td>
+                  </tr>`)
+        .join('');
+
+    tbodies.forEach(tbody => tbody.innerHTML = rowsHTML);
+}
+
+function updateWinners(winners) {
+    const tables = document.querySelectorAll('#dividendListTable, #runGameDividendTable');
+    
+    tables.forEach(table => {
+        table.querySelectorAll('.winner-info').forEach(el => {
+            el.innerHTML = `<span class="winner-name">Pending...</span>`;
+        });
+    });
+
+    for (const name in winners) {
+        const winnerArray = winners[name];
+        if (!Array.isArray(winnerArray) || winnerArray.length === 0) continue;
+
+        const dividendData = (gameSettingsData.dividends || []).find(d => d.name === name);
+        const totalAmount = dividendData ? dividendData.amount : 0;
+        const shareText = winnerArray.length > 1 ? `<span class="prize-share">(₹${(totalAmount / winnerArray.length).toFixed(2)} each)</span>` : '';
+        
+        const winnerListHTML = `<ul>` + winnerArray.map(w => 
+            `<li><span class="winner-name">${w.name}</span> (Tkt: ${w.ticketId})</li>`
+        ).join('') + `</ul>`;
+
+        let eyeIcon = '';
+        if (winnerArray.length > 0) {
+            const safeName = name.replace(/'/g, "\\'");
+            eyeIcon = `<i class="fas fa-eye" onclick="showAllWinningTicketsForDividend('${safeName}')"></i>`;
+        }
+        
+        const finalHTML = `<div class="winner-details">${winnerListHTML} ${shareText}</div> ${eyeIcon}`;
+
+        tables.forEach(table => {
+            const row = table.querySelector(`tr[data-dividend-name="${name.replace(/\s+/g, '-')}"]`);
+            if (row) {
+                const winnerCell = row.querySelector('.winner-info');
+                if (winnerCell) winnerCell.innerHTML = finalHTML;
+            }
+        });
+    }
+}
+
+
+function updateNumberBoard(called) {
+    const lastCalled = called.length > 0 ? called[called.length - 1] : null;
+    for (let i = 1; i <= 90; i++) {
+        const isCalled = called.includes(i);
+        const publicCell = document.getElementById(`num-${i}`);
+        if(publicCell){
+            publicCell.classList.toggle('called', isCalled);
+            publicCell.classList.toggle('last-called-highlight', i === lastCalled);
+        }
+
+        const adminCell = document.getElementById(`run-game-popup-num-${i}`);
+        if(adminCell){
+            adminCell.classList.toggle('called', isCalled);
+            adminCell.classList.toggle('last-called-highlight', i === lastCalled);
+        }
+    }
+}
+
+function updateCalledNumbersList(called) {
+    const listEl = document.getElementById('calledNumbersList');
+    if(listEl) {
+        listEl.innerHTML = (called.length > 0)
+            ? called.slice().reverse().map(n => `<div class="called-num-chip">${n}</div>`).join('')
+            : '<span>Game has not started...</span>';
+    }
+}
+
+function goToBooking(ticketId) {
+    window.location.hash = 'book';
+    setTimeout(() => {
+        const ticketView = document.getElementById(`booking-ticket-${ticketId}`);
+        if(ticketView && !ticketView.classList.contains('sold')) {
+           togglePublicTicketSelection(ticketId);
+           ticketView.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }, 200);
+}
+
+function renderSheetWiseBookedList() {
+    const container = document.getElementById('bookedTicketsDisplay');
+    if (!container) return;
+
+    if (!gameSettingsData || !gameSettingsData.totalTickets) {
+        container.innerHTML = '<p style="text-align:center;">Ticket data is currently unavailable.</p>';
+        return;
+    }
+
+    const totalTickets = gameSettingsData.totalTickets;
+    const allTicketsMap = new Map(allTicketsData.map(t => [t.id, t]));
+    container.innerHTML = '';
+
+    if (allTicketsMap.size === 0) {
+        container.innerHTML = '<p style="text-align:center; font-style: italic; color: #01579b;">No tickets have been generated by the admin.</p>';
+        return;
+    }
+
+    const numSheets = Math.ceil(totalTickets / 6);
+
+    for (let i = 0; i < numSheets; i++) {
+        const startTicket = i * 6 + 1;
+        const endTicket = startTicket + 5;
+
+        const sheetWrapper = document.createElement('div');
+        sheetWrapper.className = 'sheet-view';
+
+        const sheetHeader = document.createElement('div');
+        sheetHeader.className = 'sheet-header';
+        sheetHeader.textContent = `Sheet ${i + 1} (Tickets ${startTicket}-${endTicket})`;
+        sheetWrapper.appendChild(sheetHeader);
+
+        const sheetContent = document.createElement('div');
+        sheetContent.className = 'sheet-content';
+        sheetWrapper.appendChild(sheetContent);
+
+        for (let j = startTicket; j <= endTicket; j++) {
+            const ticket = allTicketsMap.get(j);
+            const ticketViewWrapper = document.createElement('div');
+            const ticketView = document.createElement('div');
+            ticketView.className = 'ticket-view';
+            ticketView.setAttribute('data-ticket-id', j);
+
+            if (!ticket) {
+                ticketView.innerHTML = `<div class="ticket-header">Ticket #${j} Data Missing</div>`;
+            } else {
+                 let headerHTML;
+                if (ticket.is_sold) {
+                    headerHTML = `<div class="ticket-header"><div>${ticket.owner_name}</div><span style="font-weight:normal;">Ticket #${j}</span></div>`;
+                } else {
+                    headerHTML = `
+                        <div class="ticket-header">
+                            <span>Ticket #${j}</span>
+                            <button class="book-now-btn-small" onclick="goToBooking(${j})">Book Now</button>
+                        </div>`;
+                }
+                
+                let gridHTML;
+                if (Array.isArray(ticket.numbers) && ticket.numbers.length > 0) {
+                    gridHTML = ticket.numbers.flat().map(n =>
+                        `<div class="ticket-num ${n > 0 ? '' : 'empty'}" data-num="${n}">${n > 0 ? n : ''}</div>`
+                    ).join('');
+                } else {
+                    gridHTML = '<p style="text-align:center; padding: 1rem; color: red;">Visual ticket data missing.</p>';
+                }
+
+                ticketView.innerHTML = `${headerHTML}<div class="ticket-grid">${gridHTML}</div>`;
+            }
+            ticketViewWrapper.appendChild(ticketView);
+            sheetContent.appendChild(ticketViewWrapper);
+        }
+        container.appendChild(sheetWrapper);
+    }
+
+    updateDisplayedTicketPublic();
+}
+
+function showAllWinningTicketsForDividend(dividendName) {
+    const winnerArray = knownWinners[dividendName];
+    if (!winnerArray || winnerArray.length === 0) {
+        return showNotification("Winner information not found for this dividend.", "error");
+    }
+
+    const displayArea = document.getElementById('winningTicketDisplayArea');
+    const title = document.getElementById('winningTicketPopupTitle');
+    
+    title.textContent = `${dividendName} Winner(s)`;
+    let allTicketsHTML = '';
+
+    winnerArray.forEach(winner => {
+        const winningNumber = winner.winningNumber;
+        const ticketId = winner.ticketId;
+        
+        allTicketsHTML += `<h4 style="color: #01579b; margin-top: 1rem; text-align: center; border-bottom: 1px solid #b3e5fc; padding-bottom: 0.5rem;">${winner.name} (${typeof ticketId === 'number' ? `Tkt #${ticketId}` : ticketId})</h4>`;
+        
+        let ticketsToDisplay = [];
+
+        if (typeof ticketId === 'string' && ticketId.toLowerCase().includes('sheet')) {
+            if (ticketId.toLowerCase().includes('full sheet')) {
+                const ticketIdsMatch = ticketId.match(/\(([^)]+)\)/);
+                if (ticketIdsMatch && ticketIdsMatch[1]) {
+                    const fullSheetTicketIds = ticketIdsMatch[1].split(',').map(Number);
+                    ticketsToDisplay = allTicketsData.filter(t => fullSheetTicketIds.includes(t.id));
+                }
+            } else if (ticketId.toLowerCase().includes('half sheet')) {
+                const ticketIdsMatch = ticketId.match(/\(([^)]+)\)/);
+                if (ticketIdsMatch && ticketIdsMatch[1]) {
+                    const halfSheetTicketIds = ticketIdsMatch[1].split(',').map(Number);
+                    ticketsToDisplay = allTicketsData.filter(t => halfSheetTicketIds.includes(t.id));
+                }
+            }
+        } else {
+            const singleTicket = allTicketsData.find(t => t.id == ticketId);
+            if (singleTicket) {
+                ticketsToDisplay.push(singleTicket);
+            }
+        }
+
+        if (ticketsToDisplay.length > 0) {
+            ticketsToDisplay.sort((a, b) => a.id - b.id).forEach(ticket => {
+                let gridHTML;
+                if (ticket && Array.isArray(ticket.numbers) && ticket.numbers.length > 0) {
+                    gridHTML = ticket.numbers.flat().map(n => {
+                        const isCalled = n > 0 && currentCalledNumbers.includes(n);
+                        const isWinningStrike = n === winningNumber;
+                        const classes = `ticket-num ${n > 0 ? '' : 'empty'} ${isCalled ? 'ticked' : ''} ${isWinningStrike ? 'winning-strike' : ''}`;
+                        return `<div class="${classes}" data-num="${n}">${n > 0 ? n : ''}</div>`;
+                    }).join('');
+                } else {
+                     gridHTML = '<p style="text-align:center; padding: 1rem; color: red;">Visual ticket data missing.</p>';
+                }
+
+
+                allTicketsHTML += `<div class="ticket-view" data-ticket-id="${ticket.id}" style="margin: 1rem 0;">
+                                    <div class="ticket-header">Ticket #${ticket.id}</div>
+                                    <div class="ticket-grid">${gridHTML}</div>
+                               </div>`;
+            });
+        } else {
+             allTicketsHTML += `<p style="text-align:center; color:#e74c3c; padding:1rem;">Could not find the visual ticket data for this winner.</p>`;
+        }
+    });
+
+    displayArea.innerHTML = allTicketsHTML;
+    showPopup('winningTicketViewerPopup');
+}
+
+function toggleDividendAmountInput(checkbox) {
+    const amountInput = checkbox.closest('td').querySelector('.dividend-amount');
+    if (amountInput) {
+        amountInput.disabled = !checkbox.checked;
+        if (!checkbox.checked) {
+            amountInput.value = '';
+        }
+    }
+}
+
+function updateAdminSettingsUI(data) {
+    if (currentView !== 'adminDashboardView') return;
+    document.getElementById('dateTimeInp').value = data.gameDateTime || '';
+    document.getElementById('totalTicketInp').value = data.totalTickets || 600;
+    document.getElementById('ticketPriceInp').value = data.ticketPrice || 0;
+    document.getElementById('agentCommissionInp').value = data.agentCommission || 0;
+
+    const table = document.getElementById('dividendSettingsTable');
+    table.innerHTML = `
+        <thead><tr><th>Dividend Name & Amount</th><th>Active</th></tr></thead>
+        <tbody>
+            ${allPossibleDividends.map(name => {
+                const dividendData = (data.dividends || []).find(d => d.name === name);
+                const isChecked = !!dividendData;
+                const amount = dividendData ? dividendData.amount || '' : '';
+                return `
+                    <tr>
+                        <td>
+                            <span class="dividend-name-text">${name}</span>
+                            <input class="tableInp dividend-amount" type="number" placeholder="Amount" value="${amount}" ${!isChecked ? 'disabled' : ''}>
+                            <input class="tableCheckbox dividend-active" type="checkbox" data-name="${name}" ${isChecked ? 'checked' : ''} onchange="toggleDividendAmountInput(this)">
+                        </td>
+                    </tr>`;
+            }).join('')}
+        </tbody>`;
+}
+
+function updateAdminInfoUI() {
+    if (currentView !== 'adminDashboardView' || !currentUser) return;
+    const adminData = allUsersData.find(u => u.uid === currentUser.uid);
+    if(adminData){
+        document.getElementById('adminNameInp').value = adminData.name || '';
+        document.getElementById('adminPhoneInp').value = adminData.phone || '';
+    }
+    document.getElementById('adminWpLinkInp').value = gameSettingsData.whatsappLink || '';
+}
+
+async function saveGameSetting() {
+    const oldTotalTickets = gameSettingsData.totalTickets || 0;
+    const newTotalTickets = parseInt(document.getElementById('totalTicketInp').value, 10);
+
+    const settingsToSave = {
+        gameDateTime: document.getElementById('dateTimeInp').value,
+        totalTickets: newTotalTickets,
+        ticketPrice: parseInt(document.getElementById('ticketPriceInp').value, 10),
+        agentCommission: parseInt(document.getElementById('agentCommissionInp').value, 10),
+    };
+
+    if (oldTotalTickets !== newTotalTickets && newTotalTickets > 0) {
+        const confirmText = document.getElementById('ticketResetConfirmText');
+        confirmText.innerHTML = `You are changing the ticket count from <b>${oldTotalTickets}</b> to <b>${newTotalTickets}</b>. <br/><br/> 'Adjust' will add/remove tickets without affecting existing bookings. <br/> 'Reset' will delete all tickets and generate new ones.`;
+
+        document.getElementById('confirmResetBtn').onclick = async () => {
+            closePopups();
+            await db.ref('settings/gameConfig').update(settingsToSave);
+            await generateHousieTickets(true);
+            showNotification('Settings saved and all tickets regenerated.', 'success');
+        };
+
+        document.getElementById('confirmNoResetBtn').onclick = async () => {
+            closePopups();
+            await db.ref('settings/gameConfig').update(settingsToSave);
+            await updateTicketCountWithoutReset(newTotalTickets, oldTotalTickets);
+            showNotification('Settings saved and ticket count adjusted.', 'success');
+        };
+
+        showPopup('ticketResetConfirmPopup');
+    } else {
+        try {
+            await db.ref('settings/gameConfig').update(settingsToSave);
+            showNotification('Game settings saved successfully!', 'success');
+            await triggerGlobalNotification('Admin has updated the game settings.', 'info');
+        } catch (e) {
+            showNotification('Error saving settings: ' + e.message, 'error');
+        }
+    }
+}
+
+async function updateTicketCountWithoutReset(newCount, oldCount) {
+    if (newCount > oldCount) {
+        showNotification(`Adding ${newCount - oldCount} new tickets...`, 'info');
+        await appendNewTickets(newCount, oldCount);
+    } else if (newCount < oldCount) {
+        const soldTicketsInRange = allTicketsData.filter(t => t.id > newCount && t.is_sold);
+        if (soldTicketsInRange.length > 0) {
+            showNotification(`Cannot decrease count. ${soldTicketsInRange.length} ticket(s) are already sold in the range you are removing. Please reset tickets instead.`, 'error');
+            await db.ref('settings/gameConfig/totalTickets').set(oldCount);
+            return;
+        }
+        showNotification(`Removing ${oldCount - newCount} tickets from the end.`, 'info');
+        const updates = {};
+        for (let i = newCount + 1; i <= oldCount; i++) {
+            updates[`/tickets/${i}`] = null;
+        }
+        await db.ref().update(updates);
+    }
+}
+
+async function appendNewTickets(newCount, oldCount) {
+    const numSetsToAdd = Math.ceil((newCount - oldCount) / 6);
+    if (numSetsToAdd <= 0) return;
+
+    showNotification(`Generating ${numSetsToAdd * 6} new tickets...`, 'info');
+    try {
+        const updates = {};
+        for (let i = 0; i < numSetsToAdd; i++) {
+            const currentSet = createTambolaSetOf6();
+            for (let j = 0; j < 6; j++) {
+                const ticketId = oldCount + (i * 6) + j + 1;
+                if (ticketId > newCount) continue;
+                updates[ticketId] = {
+                    id: ticketId,
+                    numbers: currentSet[j],
+                    is_sold: false,
+                    owner_name: null, owner_name_lower: null, owner_phone: null, agent_uid: null
+                };
+            }
+        }
+        await db.ref('/tickets').update(updates);
+        showNotification('New tickets added successfully!', 'success');
+    } catch (e) {
+        showNotification('Error appending new tickets: ' + e.message, 'error');
+    }
+}
+
+async function saveDividendSettings() {
+    const activeDividends = [];
+    let hasError = false;
+    document.querySelectorAll('#dividendSettingsTable tbody tr').forEach(row => {
+        const checkbox = row.querySelector('.dividend-active');
+        if (checkbox.checked) {
+            const name = checkbox.dataset.name;
+            const amountInput = row.querySelector('.dividend-amount');
+            const amount = parseInt(amountInput.value, 10);
+
+            if (isNaN(amount) || amount <= 0) {
+                showNotification(`Please enter a valid, positive amount for '${name}'.`, 'error');
+                amountInput.style.border = '2px solid red';
+                hasError = true;
+            } else {
+                 amountInput.style.border = '1px solid var(--secondary-bg-dash)';
+                 activeDividends.push({
+                    name: name,
+                    amount: amount
+                });
+            }
+        }
+    });
+
+    if (hasError) {
+        return; 
+    }
+
+    try {
+        await db.ref('settings/gameConfig/dividends').set(activeDividends);
+        showNotification('Dividend settings saved!', 'success');
+        await triggerGlobalNotification('Admin has updated the dividend settings.', 'info');
+    } catch (e) { showNotification('Error saving dividends: ' + e.message, 'error'); }
+}
+
+async function saveAdminInfo() {
+    if(!currentUser) return;
+    try {
+        const newPass = document.getElementById('adminPassInp').value;
+        if(newPass && newPass.length < 6) return showNotification("Password must be at least 6 characters.", 'error');
+
+        const updates = {};
+        updates[`users/${currentUser.uid}/name`] = document.getElementById('adminNameInp').value;
+        updates[`users/${currentUser.uid}/phone`] = document.getElementById('adminPhoneInp').value;
+        updates['settings/gameConfig/whatsappLink'] = document.getElementById('adminWpLinkInp').value;
+
+        await db.ref().update(updates);
+
+        if(newPass){
+            await currentUser.updatePassword(newPass);
+            showNotification("Admin info and password updated!", 'success');
+        } else {
+            showNotification('Admin info updated!', 'success');
+        }
+        await triggerGlobalNotification('Admin info has been updated.', 'info');
+        document.getElementById('adminPassInp').value = '';
+    } catch(e) {
+        showNotification("Error updating info: " + e.message, 'error');
+    }
+}
+
+async function createAgentByAdmin() {
+    if (currentUserRole !== 'admin') return showNotification("Only admins can create agents.", 'error');
+
+    const name = document.getElementById('createAgentNameInp').value.trim();
+    const email = document.getElementById('createAgentEmailInp').value.trim();
+    const phone = document.getElementById('createAgentPhoneInp').value.trim();
+    const pass = document.getElementById('createAgentPassInp').value;
+
+    if (!name || !email || !phone || !pass) return showNotification('Please fill all fields for the new agent.', 'error');
+    if (pass.length < 6) return showNotification("Password must be at least 6 characters.", 'error');
+
+    const secondaryApp = firebase.initializeApp(firebaseConfig, 'agent-creator-' + Date.now());
+    try {
+        const secondaryAuth = secondaryApp.auth();
+        const userCredential = await secondaryAuth.createUserWithEmailAndPassword(email, pass);
+        const newUser = userCredential.user;
+
+        await db.ref('users/' + newUser.uid).set({
+            name, email, phone, role: 'agent',
+            createdBy: currentUser.uid,
+            createdAt: firebase.database.ServerValue.TIMESTAMP
+        });
+
+        await secondaryAuth.signOut();
+        const successMsg = `Agent '${name}' created successfully!`;
+        showNotification(successMsg, 'success');
+        await triggerGlobalNotification(successMsg, 'success');
+
+        document.getElementById('createAgentNameInp').value = '';
+        document.getElementById('createAgentEmailInp').value = '';
+        document.getElementById('createAgentPhoneInp').value = '';
+        document.getElementById('createAgentPassInp').value = '';
+
+    } catch (error) {
+        showNotification(`Error creating agent: ${error.message}`, 'error');
+    } finally {
+        await secondaryApp.delete();
+    }
+}
+
+async function resetCallNum() {
+    if(!confirm('Are you sure? This will reset all called numbers, winners, and the game timer.')) return;
+    try {
+        await db.ref('gameState/currentState').update({
+            calledNumbers: null,
+            winners: null,
+            isGameRunning: false,
+            gameStartedAt: null 
+        });
+        showNotification('Game state has been reset.', 'success');
+        await triggerGlobalNotification('Admin has reset the game board.', 'info');
+    } catch (e) { showNotification('Error resetting game state: ' + e.message, 'error'); }
+}
+async function resetTicket() {
+    if(!confirm('Are you sure? This will mark all sold tickets as UNSOLD.')) return;
+    try {
+        const updates = {};
+        allTicketsData.forEach(ticket => {
+            if (ticket.is_sold) {
+                updates[`/tickets/${ticket.id}/is_sold`] = false;
+                updates[`/tickets/${ticket.id}/owner_name`] = null;
+                updates[`/tickets/${ticket.id}/owner_name_lower`] = null;
+                updates[`/tickets/${ticket.id}/owner_phone`] = null;
+                updates[`/tickets/${ticket.id}/agent_uid`] = null;
+                updates[`/tickets/${ticket.id}/sold_at`] = null;
+            }
+        });
+        if (Object.keys(updates).length > 0) {
+           await db.ref().update(updates);
+        }
+        showNotification('All sold tickets have been reset.', 'success');
+        await triggerGlobalNotification('Admin has reset all sold tickets.', 'info');
+    } catch (e) { showNotification('Error resetting tickets: ' + e.message, 'error'); }
+}
+
+async function resetAgent() {
+    if(!confirm('Are you sure? This will DELETE all users with the "agent" role. This cannot be undone!')) return;
+    try {
+        const updates = {};
+        const agents = allUsersData.filter(u => u.role === 'agent');
+        if (agents.length === 0) return showNotification("No agents to delete.", "info");
+
+        agents.forEach(agent => {
+            updates[`/users/${agent.uid}`] = null;
+        });
+        await db.ref().update(updates);
+
+        const msg = `${agents.length} agent account(s) deleted.`;
+        showNotification(msg, 'success');
+        await triggerGlobalNotification(msg, 'info');
+    } catch (e) { showNotification('Error deleting agents: ' + e.message, 'error'); }
+}
+
+function showLastSoldTicket() {
+    const soldTickets = allTicketsData
+        .filter(t => t.is_sold && t.sold_at)
+        .sort((a, b) => b.sold_at - a.sold_at);
+
+    if (soldTickets.length > 0) {
+        const lastTicket = soldTickets[0];
+        const agent = allUsersData.find(u => u.uid === lastTicket.agent_uid);
+        const agentName = agent ? agent.name : 'Admin/Direct';
+        showNotification(`Last ticket sold: #${lastTicket.id} to ${lastTicket.owner_name} by ${agentName}.`, 'info');
+    } else {
+        showNotification('No tickets have been sold yet.', 'info');
+    }
+}
+
+async function showPreviousGameWinners() {
+    try {
+        const snapshot = await db.ref('lastGame/winners').once('value');
+        const prevWinners = snapshot.val();
+
+        if (!prevWinners || Object.keys(prevWinners).length === 0) {
+            return showNotification('No archived winner data found.', 'info');
+        }
+
+        const titleEl = document.getElementById('genericInfoPopupTitle');
+        const contentEl = document.getElementById('genericInfoPopupContent');
+
+        titleEl.textContent = 'Previous Game Winners';
+
+        let contentHTML = '<ul>';
+        for (const dividend in prevWinners) {
+            const winnerArray = prevWinners[dividend];
+            if(Array.isArray(winnerArray)){
+                const winnerDetails = winnerArray.map(w => `${w.name} (Ticket: ${w.ticketId})`).join('<br>');
+                contentHTML += `<li>
+                    <div class="winner-dividend">${dividend}</div>
+                    <div class="winner-details">${winnerDetails}</div>
+                </li>`;
+            }
+        }
+        contentHTML += '</ul>';
+
+        contentEl.innerHTML = contentHTML;
+        showPopup('genericInfoPopup');
+
+    } catch (e) {
+        showNotification('Error fetching previous winners: ' + e.message, 'error');
+    }
+}
+
+function updateBusinessInfo() {
+    const soldTickets = allTicketsData.filter(t => t.is_sold);
+    const soldCount = soldTickets.length;
+    const totalTickets = gameSettingsData.totalTickets || 0;
+    const ticketsLeft = totalTickets - soldCount;
+    const price = gameSettingsData.ticketPrice || 0;
+    const commission = gameSettingsData.agentCommission || 0;
+    
+    const agentUids = new Set(allUsersData.filter(u => u.role === 'agent').map(u => u.uid));
+    const agentSoldCount = soldTickets.filter(t => t.agent_uid && agentUids.has(t.agent_uid)).length;
+    const totalCommission = agentSoldCount * commission;
+
+    const totalRevenue = soldCount * price;
+    const activeDividends = gameSettingsData.dividends || [];
+    const totalPrizeMoney = activeDividends.reduce((sum, dividend) => sum + (parseInt(dividend.amount, 10) || 0), 0);
+    const netProfit = totalRevenue - totalCommission - totalPrizeMoney;
+
+    const adminTable = document.getElementById('businessInfoTable');
+    if(adminTable && currentView === 'adminDashboardView') {
+        adminTable.innerHTML = `<tbody>
+            <tr><td>Total Tickets</td><td>${totalTickets}</td></tr>
+            <tr><td>Tickets Sold</td><td>${soldCount}</td></tr>
+            <tr><td>Tickets Left</td><td>${ticketsLeft}</td></tr>
+            <tr><td>Total Revenue</td><td>₹ ${totalRevenue.toLocaleString()}</td></tr>
+            <tr><td>Total Agent Commission</td><td>₹ ${totalCommission.toLocaleString()}</td></tr>
+            <tr><td>Total Prize Money</td><td>₹ ${totalPrizeMoney.toLocaleString()}</td></tr>
+            <tr><td>Net Profit</td><td>₹ ${netProfit.toLocaleString()}</td></tr>
+        </tbody>`;
+    }
+}
+
+function toggleAdminList(state) {
+    adminListState = state;
+    document.getElementById('showTicketBtn').style.backgroundColor = state === 'tickets' ? 'var(--accent-color-dash)' : 'var(--secondary-bg-dash)';
+    document.getElementById('showAgentBtn').style.backgroundColor = state === 'agents' ? 'var(--accent-color-dash)' : 'var(--secondary-bg-dash)';
+    updateAdminList();
+}
+
+function updateAdminList() {
+    if (currentView !== 'adminDashboardView') return;
+    const searchTerm = document.getElementById('adminSearchKeyInp').value.toLowerCase();
+    const table = document.getElementById('adminGameSettingTable');
+
+    if (adminListState === 'tickets') {
+        const tickets = allTicketsData.filter(t => !searchTerm || t.id.toString().includes(searchTerm) || (t.owner_name_lower||'').includes(searchTerm) || (t.owner_phone||'').includes(searchTerm));
+        table.innerHTML = `<thead><tr><th>Ticket Details</th></tr></thead><tbody>` +
+            tickets.sort((a,b) => a.id - b.id).map(t => {
+                if (t.is_sold) {
+                    const agent = allUsersData.find(u => u.uid === t.agent_uid);
+                    const name = t.owner_name ? t.owner_name.replace(/'/g, "\\'") : '';
+                    const phone = t.owner_phone || '';
+                    return `<tr class="admin-ticket-row">
+                        <td>
+                           <div class="booked-ticket-line-1">
+                                <span>#${t.id}: ${t.owner_name}</span>
+                                <div>
+                                    <i class="fas fa-edit" onclick="showEditTicketPopup(${t.id}, '${name}', '${phone}')"></i>
+                                    <i class="fas fa-trash-alt" onclick="promptDeleteTicket(${t.id}, '${name}', '${phone}')"></i>
+                                </div>
+                            </div>
+                            <div class="booked-ticket-line-2">
+                                <span>Mobile: ${t.owner_phone || '-'}</span> | <span>Agent: ${agent?.name || (t.is_sold ? 'Admin/Direct' : '-')}</span>
+                            </div>
+                        </td>
+                    </tr>`;
+                } else {
+                     return `<tr class="admin-ticket-row available-ticket">
+                        <td data-label="ID">${t.id}</td>
+                        <td data-label="Status">Available</td>
+                        <td data-label="Owner">-</td>
+                        <td data-label="Actions">-</td>
+                    </tr>`;
+                }
+            }).join('') + `</tbody>`;
+    } else {
+        const users = allUsersData.filter(u => !searchTerm || (u.name||'').toLowerCase().includes(searchTerm) || (u.email||'').toLowerCase().includes(searchTerm) || (u.phone||'').toLowerCase().includes(searchTerm));
+        table.innerHTML = `` +
+            users.map(u => {
+                const soldCount = allTicketsData.filter(t => t.agent_uid === u.uid).length;
+                let actionCell = `<td data-label="Actions">-</td>`;
+                if (u.role === 'agent') {
+                     const name = u.name ? u.name.replace(/'/g, "\\'") : '';
+                    actionCell = `<td data-label="Actions"><i class="fas fa-trash-alt" style="color: #e74c3c; cursor: pointer;" title="Delete Agent" onclick="deleteUser('${u.uid}', '${name}')"></i></td>`;
+                }
+                return `<tr>
+                    <td data-label="Name">${u.name}</td>
+                    <td data-label="Role">${u.role}</td>
+                    <td data-label="Phone">${u.phone}</td>
+                    <td data-label="Sold">${soldCount}</td>
+                    ${actionCell}
+                </tr>`;
+            }).join('') + `</tbody>`;
+    }
+}
+
+function showEditTicketPopup(ticketId, currentName, currentPhone) {
+    ticketIdToEdit = ticketId; 
+    originalOwnerInfo = { name: currentName, phone: currentPhone }; 
+    document.getElementById('editOwnerInfoText').innerHTML = `Editing details for Ticket <b>#${ticketId}</b>.`;
+    document.getElementById('editOwnerNameInp').value = currentName;
+    document.getElementById('editOwnerPhoneInp').value = currentPhone;
+    showPopup('editOwnerPopup');
+}
+
+async function saveTicketOwnerChanges() {
+    if (!ticketIdToEdit || !originalOwnerInfo.phone) return;
+
+    const newName = document.getElementById('editOwnerNameInp').value.trim();
+    const newPhone = document.getElementById('editOwnerPhoneInp').value.trim();
+
+    if (!newName || !newPhone) {
+        return showNotification('Name and Phone cannot be empty.', 'error');
+    }
+
+    const ownedTickets = allTicketsData.filter(t => t.is_sold && t.owner_phone === originalOwnerInfo.phone);
+
+    if (ownedTickets.length > 1) {
+        const confirmText = document.getElementById('applyToAllConfirmText');
+        confirmText.innerHTML = `<b>${originalOwnerInfo.name}</b> owns <b>${ownedTickets.length}</b> tickets. <br/><br/> Do you want to apply the new details to all of them?`;
+
+        document.getElementById('confirmApplyToAllBtn').onclick = () => applyOwnerChanges(true, newName, newPhone);
+        document.getElementById('confirmApplyToSingleBtn').onclick = () => applyOwnerChanges(false, newName, newPhone);
+
+        showPopup('applyToAllConfirmPopup');
+    } else {
+        applyOwnerChanges(false, newName, newPhone);
+    }
+}
+
+async function applyOwnerChanges(applyToAll, newName, newPhone) {
+    try {
+        const updates = {};
+        let ticketsToUpdate = [];
+        let successMessage = '';
+
+        if (applyToAll) {
+            ticketsToUpdate = allTicketsData.filter(t => t.is_sold && t.owner_phone === originalOwnerInfo.phone);
+            successMessage = `Details updated for all ${ticketsToUpdate.length} tickets owned by ${originalOwnerInfo.name}.`;
+        } else {
+            const singleTicket = allTicketsData.find(t => t.id === ticketIdToEdit);
+            if (singleTicket) ticketsToUpdate.push(singleTicket);
+            successMessage = `Ticket #${ticketIdToEdit} updated successfully!`;
+        }
+
+        if (ticketsToUpdate.length === 0) {
+            closePopups();
+            return showNotification('Could not find the specified ticket(s) to update.', 'error');
+        }
+
+        ticketsToUpdate.forEach(ticket => {
+            updates[`/tickets/${ticket.id}/owner_name`] = newName;
+            updates[`/tickets/${ticket.id}/owner_name_lower`] = newName.toLowerCase();
+            updates[`/tickets/${ticket.id}/owner_phone`] = newPhone;
+        });
+
+        await db.ref().update(updates);
+        showNotification(successMessage, 'success');
+
+    } catch (e) {
+        showNotification('Error updating ticket(s): ' + e.message, 'error');
+    } finally {
+        closePopups();
+        ticketIdToEdit = null;
+        originalOwnerInfo = { name: '', phone: '' };
+    }
+}
+
+function promptDeleteTicket(ticketId, ownerName, ownerPhone) {
+    if (!ownerPhone) {
+        if (confirm(`This ticket has no owner info. Are you sure you want to mark Ticket #${ticketId} as available?`)) {
+            performDelete(ticketId, false);
+        }
+        return;
+    }
+
+    const ownedTickets = allTicketsData.filter(t => t.is_sold && t.owner_phone === ownerPhone);
+
+    if (ownedTickets.length > 1) {
+        ticketToDeleteInfo = { ticketId, ownerName, ownerPhone };
+        const confirmText = document.getElementById('deleteConfirmText');
+        confirmText.innerHTML = `<b>${ownerName}</b> owns <b>${ownedTickets.length}</b> tickets. <br/><br/> Do you want to delete all of them, or just this one (<b>#${ticketId}</b>)?`;
+
+        document.getElementById('confirmDeleteAllBtn').onclick = () => performDelete(ownerPhone, true);
+        document.getElementById('confirmDeleteSingleBtn').onclick = () => performDelete(ticketId, false);
+
+        showPopup('deleteConfirmPopup');
+    } else {
+        if (confirm(`Are you sure you want to delete Ticket #${ticketId} for ${ownerName}? This will mark it as available.`)) {
+            performDelete(ticketId, false);
+        }
+    }
+}
+
+async function performDelete(identifier, deleteAll) {
+    try {
+        const updates = {};
+        let ticketsToReset = [];
+        let successMessage = '';
+
+        if (deleteAll) {
+            ticketsToReset = allTicketsData.filter(t => t.is_sold && t.owner_phone === identifier);
+            successMessage = `Deleted all ${ticketsToReset.length} tickets for the owner.`;
+        } else {
+            const singleTicket = allTicketsData.find(t => t.id === identifier);
+            if (singleTicket) ticketsToReset.push(singleTicket);
+            successMessage = `Ticket #${identifier} has been deleted and is now available.`;
+        }
+
+        if (ticketsToReset.length === 0) {
+            closePopups();
+            return showNotification('Could not find ticket(s) to delete.', 'error');
+        }
+
+        ticketsToReset.forEach(ticket => {
+            updates[`/tickets/${ticket.id}/is_sold`] = false;
+            updates[`/tickets/${ticket.id}/owner_name`] = null;
+            updates[`/tickets/${ticket.id}/owner_name_lower`] = null;
+            updates[`/tickets/${ticket.id}/owner_phone`] = null;
+            updates[`/tickets/${ticket.id}/agent_uid`] = null;
+            updates[`/tickets/${ticket.id}/sold_at`] = null;
+        });
+
+        await db.ref().update(updates);
+        showNotification(successMessage, 'success');
+        triggerGlobalNotification(`Admin made ${ticketsToReset.length} ticket(s) available again.`, 'info');
+
+    } catch (e) {
+        showNotification('Error deleting ticket(s): ' + e.message, 'error');
+    } finally {
+        closePopups();
+        ticketToDeleteInfo = {};
+    }
+}
+
+
+async function deleteUser(uid, name) {
+    if (uid === currentUser.uid) {
+        return showNotification("You cannot delete your own account.", "error");
+    }
+    const userToDelete = allUsersData.find(u => u.uid === uid);
+    if (userToDelete && userToDelete.role === 'admin') {
+        return showNotification("Admins cannot be deleted from this panel.", "error");
+    }
+
+    if (!confirm(`Are you sure you want to PERMANENTLY DELETE the agent '${name}'? This action cannot be undone.`)) return;
+
+    try {
+        await db.ref(`users/${uid}`).remove();
+        const msg = `Agent '${name}' has been deleted.`;
+        showNotification(msg, 'success');
+        await triggerGlobalNotification(msg, 'info');
+    } catch (e) {
+        showNotification('Error deleting user: ' + e.message, 'error');
+    }
+}
+
+function handlePosterImageUpload(event) {
+    const fileInput = event.target;
+    if (fileInput.files && fileInput.files[0]) {
+        const file = fileInput.files[0];
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+        if (!allowedTypes.includes(file.type)) {
+            showNotification('Please upload a valid image file (JPG, PNG, GIF, WEBP).', 'error');
+            fileInput.value = ''; // Reset the input
+            return;
+        }
+
+        const reader = new FileReader();
+
+        reader.onload = function(e) {
+            // e.target.result contains the Base64 data URL
+            const base64Image = e.target.result;
+            changePosterBackground(base64Image);
+        };
+
+        reader.onerror = function() {
+            showNotification('Failed to read the image file.', 'error');
+        };
+
+        reader.readAsDataURL(file);
+    }
+}
+
+function changePosterBackground(source) {
+    const posterContent = document.getElementById('posterContent');
+    if (posterContent) {
+        let newImageUrl;
+        // Check for full URL or Base64 data URI
+        if (source.startsWith('http') || source.startsWith('data:image')) {
+            newImageUrl = source;
+        } else {
+            // Fallback for keyword search on Unsplash
+            newImageUrl = `https://source.unsplash.com/random/600x800/?${source}&t=${new Date().getTime()}`;
+        }
+        posterContent.style.backgroundImage = `url('${newImageUrl}')`;
+        showNotification('Poster background updated!', 'info', 2000);
+    }
+}
+
+function showPosterModal() {
+    const title = "NINGOL HOUSIE";
+    const gameDateTime = gameSettingsData.gameDateTime;
+    const ticketPrice = gameSettingsData.ticketPrice || 'N/A';
+    const totalTickets = gameSettingsData.totalTickets || 'N/A';
+    const activeDividends = gameSettingsData.dividends || [];
+    const adminUser = allUsersData.find(u => u.role === 'admin');
+    const adminPhone = adminUser ? adminUser.phone : (document.getElementById('adminPhoneInp').value || 'N/A');
+    const websiteLink = window.location.href.split('#')[0];
+
+    let gameTimeFormatted = "DATE & TIME NOT SET";
+    if (gameDateTime) {
+        const date = new Date(gameDateTime);
+        gameTimeFormatted = date.toLocaleString('en-US', { weekday: 'long', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+
+    const dividendNamesHTML = activeDividends.map(d => `<p>${d.name}</p>`).join('');
+    const dividendAmountsHTML = activeDividends.map(d => `<p>Rs ${d.amount.toLocaleString()}</p>`).join('');
+
+    const posterHTML = `
+        <h1 class="poster-title" contenteditable="true">${title}</h1>
+        <p class="poster-datetime" contenteditable="true">${gameTimeFormatted}</p>
+        <p class="poster-tagline" contenteditable="true">Grab Your Tickets & Get Ready to Win!</p>
+
+        <div class="prize-section">
+            <h3>PRIZES</h3>
+            <div class="prize-list">
+                <div class="prize-column" id="prize-names">
+                    ${dividendNamesHTML}
+                </div>
+                <div class="prize-column" id="prize-amounts">
+                    ${dividendAmountsHTML}
+                </div>
+            </div>
+        </div>
+
+        <p class="ticket-details" contenteditable="true">Get ticket @ Rs ${ticketPrice}. Total tickets only (${totalTickets})</p>
+
+        <div class="contact-section">
+            <p contenteditable="true">visit: <a href="${websiteLink}" target="_blank">${websiteLink.replace(/^https?:\/\//, '')}</a></p>
+            <p contenteditable="true">Whatsapp: <span>${adminPhone}</span></p>
+        </div>
+    `;
+
+    document.getElementById('posterContent').innerHTML = posterHTML;
+    
+    changePosterBackground('party,confetti');
+    
+    showPopup('posterMakerPopup');
+}
+
+
+function savePosterAsImage() {
+    const posterElement = document.getElementById('posterContent');
+    if (!posterElement) return showNotification('Poster element not found.', 'error');
+
+    showNotification('Generating poster image...', 'info');
+
+    html2canvas(posterElement, {
+        useCORS: true, 
+        allowTaint: true,
+        logging: false,
+    }).then(canvas => {
+        const link = document.createElement('a');
+        link.download = 'sintha-housie-poster.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        showNotification('Poster download started!', 'success');
+    }).catch(err => {
+        console.error("html2canvas error:", err);
+        showNotification('Could not generate poster image. Check console for errors.', 'error');
+    });
+}
+
+async function sharePoster() {
+    const posterElement = document.getElementById('posterContent');
+    if (!posterElement) return showNotification('Poster element not found.', 'error');
+
+    showNotification('Preparing poster for sharing...', 'info');
+
+    try {
+        const canvas = await html2canvas(posterElement, { useCORS: true, allowTaint: true });
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const file = new File([blob], 'housie-poster.png', { type: 'image/png' });
+        const filesArray = [file];
+
+        const websiteName = "NINGOL HOUSIE GAME!";
+        const websiteLink = window.location.href.split('#')[0];
+        
+        if (navigator.canShare && navigator.canShare({ files: filesArray })) {
+            await navigator.share({
+                files: filesArray,
+                title: websiteName,
+                text: `Join the ${websiteName}. Check out the poster!`,
+                url: websiteLink
+            });
+            showNotification('Poster shared successfully!', 'success');
+        } else {
+            showNotification('Image sharing not supported. Saving image instead.', 'info', 6000);
+            savePosterAsImage();
+        }
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+             console.error('Error sharing poster:', error);
+             showNotification(`Could not share poster: ${error.message}`, 'error');
+             savePosterAsImage();
+        }
+    }
+}
+
+function updateAgentInfoUI() {
+    if (!currentUser || currentView !== 'agentDashboardView') return;
+    
+    const agentData = allUsersData.find(u => u.uid === currentUser.uid);
+    if (agentData) {
+        document.getElementById('agentNameInp').value = agentData.name;
+        document.getElementById('agentPhoneInp').value = agentData.phone;
+    }
+    
+    const mySoldTickets = allTicketsData.filter(t => t.agent_uid === currentUser.uid);
+    const mySoldCount = mySoldTickets.length;
+    const myEarnings = mySoldCount * (gameSettingsData.agentCommission || 0);
+    document.getElementById('earningBtn').textContent = `₹ ${myEarnings.toLocaleString()}`;
+
+    const soldCount = allTicketsData.filter(t => t.is_sold).length;
+    const totalTickets = gameSettingsData.totalTickets || 0;
+    const ticketsLeft = totalTickets - soldCount;
+
+    const agentBusinessInfoTable = document.getElementById('agentBusinessInfoTable');
+    if (agentBusinessInfoTable) {
+        agentBusinessInfoTable.innerHTML = `<tbody>
+            <tr><td>Ticket Price</td><td>₹ ${(gameSettingsData.ticketPrice || 0).toLocaleString()}</td></tr>
+            <tr><td>My Commission/Tkt</td><td>₹ ${(gameSettingsData.agentCommission || 0).toLocaleString()}</td></tr>
+            <tr><td style="color:var(--accent-color-dash);">My Tickets Sold</td><td style="color:var(--accent-color-dash); font-weight: bold;">${mySoldCount}</td></tr>
+            <tr><td colspan="2" style="height: 10px;"></td></tr>
+            <tr><td>Total Tickets in Game</td><td>${totalTickets}</td></tr>
+            <tr><td>Total Sold</td><td>${soldCount}</td></tr>
+            <tr><td>Tickets Left</td><td>${ticketsLeft}</td></tr>
+        </tbody>`;
+    }
+}
+
+function showAgentSoldTickets() {
+    if (!currentUser || currentView !== 'agentDashboardView') return;
+    const searchTerm = document.getElementById('agentSearchKeyInp').value.toLowerCase();
+    const table = document.getElementById('agentSoldTicketsTable');
+    const myTickets = allTicketsData.filter(t => t.agent_uid === currentUser.uid && (!searchTerm || (t.owner_name_lower||'').includes(searchTerm) || (t.owner_phone||'').includes(searchTerm)));
+
+    table.innerHTML = `<thead><tr><th>Ticket ID</th><th>Owner Name</th><th>Owner Phone</th></tr></thead><tbody>` +
+        myTickets.sort((a,b) => a.id - b.id).map(t => `<tr><td data-label="ID">${t.id}</td><td data-label="Name">${t.owner_name}</td><td data-label="Phone">${t.owner_phone}</td></tr>`).join('') + `</tbody>`;
+}
+
+function updateDashboardBookingPopup() {
+    const container = document.getElementById('dashTicketBlockDiv');
+    if (!container) return;
+    container.innerHTML = '';
+    const indicator = document.getElementById('dashboardSelectionIndicator');
+    if (indicator) indicator.textContent = '';
+
+    const totalTickets = gameSettingsData.totalTickets || 0;
+    if (allTicketsData.length === 0 || totalTickets === 0) {
+        container.innerHTML = '<p style="text-align: center; color: var(--light-text-dash);">Tickets have not been generated.</p>';
+        return;
+    }
+
+    const ticketsMap = new Map(allTicketsData.map(t => [t.id, t]));
+    const numSheets = Math.ceil(totalTickets / 6);
+
+    for (let i = 0; i < numSheets; i++) {
+        const startTicket = i * 6 + 1;
+        const endTicket = startTicket + 5;
+
+        const sheetRow = document.createElement('div');
+        sheetRow.className = 'compact-sheet-row';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'sheet-tick-box';
+        checkbox.onchange = () => selectFullSheetDashboard(checkbox, startTicket, endTicket);
+        sheetRow.appendChild(checkbox);
+
+        const buttonGroup = document.createElement('div');
+        buttonGroup.className = 'ticket-buttons-group';
+
+        for (let j = startTicket; j <= endTicket; j++) {
+            const ticket = ticketsMap.get(j);
+            const btn = document.createElement('button');
+            btn.className = 'ticketBlockBtn';
+            btn.textContent = j;
+            btn.id = `dash-ticket-btn-${j}`;
+            if (ticket && ticket.is_sold) {
+                btn.disabled = true;
+            } else {
+                btn.onclick = () => {
+                    btn.classList.toggle('selected');
+                    updateDashboardSelectionIndicator();
+                };
+            }
+            buttonGroup.appendChild(btn);
+        }
+        
+        sheetRow.appendChild(buttonGroup);
+        container.appendChild(sheetRow);
+    }
+}
+
+function selectFullSheetDashboard(checkbox, startId, endId) {
+    for (let id = startId; id <= endId; id++) {
+        const btn = document.getElementById(`dash-ticket-btn-${id}`);
+        if (btn && !btn.disabled) {
+            const isSelected = btn.classList.contains('selected');
+            if (checkbox.checked && !isSelected) {
+                btn.click();
+            } else if (!checkbox.checked && isSelected) {
+                btn.click();
+            }
+        }
+    }
+}
+
+function updateDashboardSelectionIndicator() {
+    const selectedNodes = document.querySelectorAll('#dashTicketBlockDiv .selected');
+    const selectedIds = Array.from(selectedNodes).map(node => parseInt(node.textContent, 10));
+    const indicator = document.getElementById('dashboardSelectionIndicator');
+    if (indicator) {
+        const result = checkSheetSelection(selectedIds);
+        indicator.textContent = result.message;
+        indicator.style.borderColor = result.valid ? 'var(--accent-color-dash)' : '#e74c3c';
+    }
+}
+
+async function handleDashboardBooking() {
+    if (!currentUser) return showNotification("You must be logged in.", 'error');
+    const name = document.getElementById('dashBookerNameInp').value.trim();
+    const phone = document.getElementById('dashBookerPhoneInp').value.trim();
+    const selectedNodes = document.querySelectorAll('#dashTicketBlockDiv .selected');
+    if (!name || !phone) return showNotification('Please enter name and phone.', 'error');
+    if (selectedNodes.length === 0) return showNotification('Please select tickets.', 'error');
+    const ticketIdsToBook = Array.from(selectedNodes).map(node => parseInt(node.textContent, 10));
+    try {
+        const updates = {};
+        const timestamp = firebase.database.ServerValue.TIMESTAMP;
+        ticketIdsToBook.forEach(id => {
+            updates[`/tickets/${id}/is_sold`] = true;
+            updates[`/tickets/${id}/owner_name`] = name;
+            updates[`/tickets/${id}/owner_name_lower`] = name.toLowerCase();
+            updates[`/tickets/${id}/owner_phone`] = phone;
+            updates[`/tickets/${id}/agent_uid`] = currentUser.uid;
+            updates[`/tickets/${id}/sold_at`] = timestamp;
+        });
+        await db.ref().update(updates);
+        showNotification(`${ticketIdsToBook.length} tickets booked for ${name}.`, 'success');
+        document.getElementById('dashBookerNameInp').value = '';
+        document.getElementById('dashBookerPhoneInp').value = '';
+        closePopups();
+    } catch(e) { showNotification('Error booking tickets: ' + e.message, 'error'); }
+}
+
+function renderPublicBookingGrid() {
+    const container = document.getElementById('publicBookingGrid');
+    if (!container) return;
+    container.innerHTML = '';
+    publicPopupSelectedTickets = [];
+    updatePublicBookingIndicator();
+
+    const totalTickets = gameSettingsData.totalTickets || 0;
+    if (allTicketsData.length === 0 || totalTickets === 0) {
+        container.innerHTML = '<p style="text-align: center; color: var(--light-text-dash);">Tickets are not available yet.</p>';
+        return;
+    }
+
+    const ticketsMap = new Map(allTicketsData.map(t => [t.id, t]));
+    const numSheets = Math.ceil(totalTickets / 6);
+
+    for (let i = 0; i < numSheets; i++) {
+        const startTicket = i * 6 + 1;
+        const endTicket = startTicket + 5;
+        
+        const sheetRow = document.createElement('div');
+        sheetRow.className = 'compact-sheet-row';
+        
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'sheet-tick-box';
+        checkbox.onchange = () => selectFullSheetPublic(checkbox, startTicket, endTicket);
+        sheetRow.appendChild(checkbox);
+        
+        const buttonGroup = document.createElement('div');
+        buttonGroup.className = 'ticket-buttons-group';
+
+        for (let j = startTicket; j <= endTicket; j++) {
+            const ticket = ticketsMap.get(j);
+            const btn = document.createElement('button');
+            btn.className = 'ticketBlockBtn';
+            btn.textContent = j;
+            btn.id = `public-ticket-btn-${j}`;
+            if (ticket && ticket.is_sold) {
+                btn.disabled = true;
+            } else {
+                btn.onclick = () => togglePublicPopupTicketSelection(j);
+            }
+            buttonGroup.appendChild(btn);
+        }
+
+        sheetRow.appendChild(buttonGroup);
+        container.appendChild(sheetRow);
+    }
+}
+
+function togglePublicPopupTicketSelection(ticketId) {
+    const btn = document.getElementById(`public-ticket-btn-${ticketId}`);
+    if (!btn || btn.disabled) return;
+
+    const index = publicPopupSelectedTickets.indexOf(ticketId);
+    if (index > -1) {
+        publicPopupSelectedTickets.splice(index, 1);
+        btn.classList.remove('selected');
+    } else {
+        publicPopupSelectedTickets.push(ticketId);
+        btn.classList.add('selected');
+    }
+    updatePublicBookingIndicator();
+}
+
+function selectFullSheetPublic(checkbox, startId, endId) {
+    for (let id = startId; id <= endId; id++) {
+        const btn = document.getElementById(`public-ticket-btn-${id}`);
+        if (btn && !btn.disabled) {
+            const isSelected = publicPopupSelectedTickets.includes(id);
+            if (checkbox.checked && !isSelected) {
+                togglePublicPopupTicketSelection(id);
+            } else if (!checkbox.checked && isSelected) {
+                togglePublicPopupTicketSelection(id);
+            }
+        }
+    }
+}
+
+function updatePublicBookingIndicator() {
+    const indicator = document.getElementById('publicBookingIndicator');
+    if (indicator) {
+        const result = checkSheetSelection(publicPopupSelectedTickets);
+        indicator.textContent = result.message;
+        indicator.style.color = result.valid ? 'var(--accent-color-dash)' : '#e74c3c';
+        indicator.style.borderColor = result.valid ? 'var(--accent-color-dash)' : '#e74c3c';
+    }
+}
+
+function handlePublicPopupBookingRequest() {
+    const name = document.getElementById('publicBookerNameInp').value.trim();
+    const phone = document.getElementById('publicBookerPhoneInp').value.trim();
+
+    if (!name || !phone) return showNotification('Please enter your name and phone number.', 'error');
+    if (publicPopupSelectedTickets.length === 0) return showNotification('Please select tickets to book.', 'error');
+    openAgentSelectorForWhatsApp(name, phone, publicPopupSelectedTickets);
+}
+
+async function toggleGameRunner() {
+    const gameStateRef = db.ref('gameState/currentState');
+    const isRunning = document.getElementById('callStatusInp').value === 'on';
+    if (gameRunnerInterval) clearInterval(gameRunnerInterval);
+
+    try {
+        if (isRunning) {
+            await gameStateRef.child('isGameRunning').set(true);
+            await gameStateRef.transaction(currentData => {
+                if (currentData) {
+                    if (!currentData.gameStartedAt) {
+                        currentData.gameStartedAt = firebase.database.ServerValue.TIMESTAMP;
+                    }
+                }
+                return currentData;
+            });
+            
+            playSound(audioBaseUrl + "gamehasstarted.mp3");
+
+            await triggerGlobalNotification('The game has started! Good luck!', 'success');
+            const intervalSeconds = parseInt(document.getElementById('callIntervalInp').value, 10);
+            if (isNaN(intervalSeconds) || intervalSeconds < 1) {
+                showNotification("Set a valid call interval (>= 1 second).", 'error');
+                document.getElementById('callStatusInp').value = 'off';
+                await gameStateRef.child('isGameRunning').set(false);
+                return;
+            }
+            gameRunnerInterval = setInterval(callNextNumber, intervalSeconds * 1000);
+            callNextNumber(); 
+        } else {
+            await gameStateRef.child('isGameRunning').set(false);
+        }
+        
+    } catch (e) {
+        showNotification("Error starting/stopping game: " + e.message, 'error');
+    }
+}
+
+function setNextCallNumber() {
+    const inputEl = document.getElementById('nextCallInp');
+    const numberToSet = parseInt(inputEl.value, 10);
+
+    if (isNaN(numberToSet) || numberToSet < 1 || numberToSet > 90) {
+        showNotification('Please enter a valid number between 1 and 90.', 'error');
+        return;
+    }
+
+    if (currentCalledNumbers.includes(numberToSet)) {
+        showNotification(`Number ${numberToSet} has already been called.`, 'error');
+        return;
+    }
+    
+    nextManualCallNumber = numberToSet;
+    
+    inputEl.value = ''; 
+}
+
+function callNextNumber() {
+    const gameStateRef = db.ref('gameState/currentState');
+    gameStateRef.transaction(gameState => {
+        if (!gameState) return { isGameRunning: false, calledNumbers: [], winners: {} };
+        if (!gameState.isGameRunning) {
+            if (gameRunnerInterval) clearInterval(gameRunnerInterval);
+            return;
+        }
+
+        const called = gameState.calledNumbers || [];
+        const activeDividends = gameSettingsData.dividends || [];
+        const currentWinners = gameState.winners || {};
+        const areAllDividendsClaimed = activeDividends.every(div => currentWinners[div.name]);
+
+        if (called.length >= 90 || areAllDividendsClaimed) {
+            if (gameRunnerInterval) clearInterval(gameRunnerInterval);
+            gameState.isGameRunning = false;
+            const reason = areAllDividendsClaimed ? "All dividends have been won!" : "All 90 numbers have been called!";
+            showNotification(`${reason} Game over.`, 'info');
+            triggerGlobalNotification(`${reason} The game has ended!`, 'info');
+            return gameState;
+        }
+
+        let newNumber;
+        const availableNumbers = Array.from({length: 90}, (_, i) => i + 1).filter(n => !called.includes(n));
+        
+        if (nextManualCallNumber && availableNumbers.includes(nextManualCallNumber)) {
+            newNumber = nextManualCallNumber;
+            nextManualCallNumber = null;
+        } else {
+            if (availableNumbers.length === 0) {
+                 if (gameRunnerInterval) clearInterval(gameRunnerInterval);
+                 gameState.isGameRunning = false;
+                 return gameState;
+            }
+            newNumber = availableNumbers[Math.floor(Math.random() * availableNumbers.length)];
+        }
+
+        gameState.calledNumbers = [...called, newNumber];
+        gameState.winners = checkAllWinners(gameState.calledNumbers, gameState.winners || {});
+
+        const newWinners = gameState.winners;
+        const nowAllDividendsClaimed = activeDividends.every(div => newWinners[div.name]);
+        if(nowAllDividendsClaimed){
+            gameState.isGameRunning = false;
+        }
+
+        return gameState;
+    }, (error, committed, snapshot) => {
+        if (error) {
+            console.error("Game call transaction failed: ", error);
+            showNotification('Game runner failed. Turning off.', 'error');
+            if (gameRunnerInterval) clearInterval(gameRunnerInterval);
+            gameStateRef.child('isGameRunning').set(false);
+        } else if (committed && snapshot.exists() && !snapshot.val().isGameRunning) {
+             if (gameRunnerInterval) clearInterval(gameRunnerInterval);
+             showNotification("All dividends won! Game over.", 'info');
+             triggerGlobalNotification("All dividends have been won! The game has ended!", 'info');
+        }
+    });
+}
+
+function checkAllWinners(calledNumbers, currentWinners) {
+    let updatedWinners = JSON.parse(JSON.stringify(currentWinners));
+    const activeDividends = gameSettingsData.dividends || [];
+    const soldTickets = allTicketsData.filter(t => t.is_sold);
+    const lastCalledNumber = calledNumbers[calledNumbers.length - 1];
+    
+    const check = (numbers) => numbers.every(n => calledNumbers.includes(n));
+    const countMarked = (ticket) => (ticket.numbers || []).flat().filter(n => n > 0 && calledNumbers.includes(n)).length;
+
+    const ticketsByOwner = soldTickets.reduce((acc, ticket) => {
+        if (ticket.owner_phone) {
+            if (!acc[ticket.owner_phone]) acc[ticket.owner_phone] = [];
+            acc[ticket.owner_phone].push(ticket);
+        }
+        return acc;
+    }, {});
+
+    for (const dividend of activeDividends) {
+        if (updatedWinners[dividend.name]) continue;
+
+        let winnersThisTurn = [];
+        
+        for (const ticket of soldTickets) {
+            if (!ticket.numbers || !Array.isArray(ticket.numbers) || ticket.numbers.length < 3) continue;
+            
+            let isWinner = false;
+            let winningPatternNumbers = [];
+            const checkPattern = (numbers) => {
+                winningPatternNumbers = numbers;
+                return check(numbers);
+            };
+            
+            const [r1, r2, r3] = ticket.numbers.map(row => row.filter(n => n > 0));
+
+            switch (dividend.name) {
+                case "Top Line":
+                    if (r1.length > 0 && checkPattern(r1)) isWinner = true;
+                    break;
+                case "Middle Line":
+                    if (r2.length > 0 && checkPattern(r2)) isWinner = true;
+                    break;
+                case "Bottom Line":
+                    if (r3.length > 0 && checkPattern(r3)) isWinner = true;
+                    break;
+                case "Corners (4)":
+                    const corners = [r1[0], r1[r1.length - 1], r3[0], r3[r3.length - 1]].filter(Boolean);
+                    if (corners.length === 4 && checkPattern(corners)) isWinner = true;
+                    break;
+                case "Star":
+                    const midNumR2 = r2.length === 5 ? r2[2] : null;
+                    if (r1.length === 5 && midNumR2 && r3.length === 5) {
+                        const starNumbers = [r1[0], r1[4], midNumR2, r3[0], r3[4]].filter(Boolean);
+                        if(starNumbers.length === 5 && checkPattern(starNumbers)) isWinner = true;
+                    }
+                    break;
+                case "First Full House":
+                case "Second Full House":
+                case "Third Full House":
+                    const housefullWinnersData = Object.values(updatedWinners).flat().filter(w => w.dividendName?.includes("Full House"));
+                    const housefullWinnerTicketIds = housefullWinnersData.map(w => w.ticketId);
+                    const allTicketNumbers = r1.concat(r2, r3);
+
+                    if (checkPattern(allTicketNumbers) && !housefullWinnerTicketIds.includes(ticket.id)) {
+                        const claimedPrizesCount = Object.keys(updatedWinners).filter(key => key.includes("Full House")).length;
+                        
+                        if ((dividend.name === "First Full House" && claimedPrizesCount === 0) ||
+                            (dividend.name === "Second Full House" && claimedPrizesCount === 1) ||
+                            (dividend.name === "Third Full House" && claimedPrizesCount === 2)) {
+                            isWinner = true;
+                        }
+                    }
+                    break;
+                default:
+                    if (dividend.name.startsWith("Early") || dividend.name.startsWith("Quick")) {
+                        const count = parseInt(dividend.name.match(/\d+/)[0], 10);
+                        if (countMarked(ticket) === count) {
+                            isWinner = true;
+                            winningPatternNumbers = (ticket.numbers || []).flat().filter(n => n > 0 && calledNumbers.includes(n)).slice(0, count);
+                        }
+                    }
+                    break;
+            }
+            if (isWinner && winningPatternNumbers.includes(lastCalledNumber)) {
+                winnersThisTurn.push({ name: ticket.owner_name, phone: ticket.owner_phone, ticketId: ticket.id, winningNumber: lastCalledNumber, won_at: firebase.database.ServerValue.TIMESTAMP, dividendName: dividend.name });
+            }
+        }
+
+        if (dividend.name === 'Full Sheet Bonus' || dividend.name === 'Half Sheet Bonus') {
+            for (const ownerPhone in ticketsByOwner) {
+                const ownerTickets = ticketsByOwner[ownerPhone];
+                const ticketsBySheet = ownerTickets.reduce((acc, ticket) => {
+                    const sheetNum = Math.floor((ticket.id - 1) / 6);
+                    if (!acc[sheetNum]) acc[sheetNum] = [];
+                    acc[sheetNum].push(ticket);
+                    return acc;
+                }, {});
+
+                for (const sheetNum in ticketsBySheet) {
+                    const sheetTickets = ticketsBySheet[sheetNum];
+                    if (dividend.name === 'Full Sheet Bonus' && sheetTickets.length === 6) {
+                        if (sheetTickets.every(t => countMarked(t) >= 2) && sheetTickets.some(t => (t.numbers || []).flat().includes(lastCalledNumber))) {
+                            const fullSheetTicketIds = sheetTickets.map(t => t.id).sort((a,b)=>a-b);
+                            winnersThisTurn.push({ 
+                                name: sheetTickets[0].owner_name, 
+                                phone: ownerPhone, 
+                                ticketId: `Full Sheet (${fullSheetTicketIds.join(',')})`, 
+                                winningNumber: lastCalledNumber, 
+                                won_at: firebase.database.ServerValue.TIMESTAMP, 
+                                dividendName: dividend.name 
+                            });
+                        }
+                    } else if (dividend.name === 'Half Sheet Bonus') {
+                        const sheetTicketIds = new Set(sheetTickets.map(t => t.id));
+                        const sheetStartId = parseInt(sheetNum) * 6 + 1;
+                        
+                        const firstHalfIds = [sheetStartId, sheetStartId + 1, sheetStartId + 2];
+                        const secondHalfIds = [sheetStartId + 3, sheetStartId + 4, sheetStartId + 5];
+
+                        let winnerFoundInSheet = false;
+
+                        if (firstHalfIds.every(id => sheetTicketIds.has(id))) {
+                            const halfSheetTickets = sheetTickets.filter(t => firstHalfIds.includes(t.id));
+                            if (halfSheetTickets.every(t => countMarked(t) >= 2) && halfSheetTickets.some(t => (t.numbers || []).flat().includes(lastCalledNumber))) {
+                                winnersThisTurn.push({
+                                    name: halfSheetTickets[0].owner_name,
+                                    phone: ownerPhone,
+                                    ticketId: `Half Sheet (${firstHalfIds.join(',')})`,
+                                    winningNumber: lastCalledNumber,
+                                    won_at: firebase.database.ServerValue.TIMESTAMP,
+                                    dividendName: dividend.name
+                                });
+                                winnerFoundInSheet = true;
+                            }
+                        }
+
+                        if (!winnerFoundInSheet && secondHalfIds.every(id => sheetTicketIds.has(id))) {
+                            const halfSheetTickets = sheetTickets.filter(t => secondHalfIds.includes(t.id));
+                            if (halfSheetTickets.every(t => countMarked(t) >= 2) && halfSheetTickets.some(t => (t.numbers || []).flat().includes(lastCalledNumber))) {
+                                winnersThisTurn.push({
+                                    name: halfSheetTickets[0].owner_name,
+                                    phone: ownerPhone,
+                                    ticketId: `Half Sheet (${secondHalfIds.join(',')})`,
+                                    winningNumber: lastCalledNumber,
+                                    won_at: firebase.database.ServerValue.TIMESTAMP,
+                                    dividendName: dividend.name
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+        if (winnersThisTurn.length > 0) {
+            updatedWinners[dividend.name] = winnersThisTurn;
+        }
+    }
+    return updatedWinners;
+}
+
+
+async function generateHousieTickets(bypassConfirm = false) {
+    const totalTicketsStr = document.getElementById('totalTicketInp').value;
+    if (!totalTicketsStr) return showNotification("Please enter the total number of tickets.", 'error');
+    const totalTickets = parseInt(totalTicketsStr, 10);
+    if (isNaN(totalTickets) || totalTickets <= 0) return showNotification("Please enter a valid number of tickets.", 'error');
+    if (totalTickets % 6 !== 0) return showNotification('Total tickets must be a multiple of 6.', 'error');
+    if (!bypassConfirm && !confirm(`This will DELETE ALL existing tickets and generate ${totalTickets} new ones. Are you sure?`)) return;
+
+    showNotification(`Generating ${totalTickets} new tickets... This may take a moment.`, 'info');
+    await triggerGlobalNotification('Admin is generating new tickets...', 'info');
+
+    try {
+        await db.ref('/tickets').set(null); 
+        setTimeout(async () => {
+            const newTicketsObject = {};
+            const numSets = totalTickets / 6;
+
+            for (let i = 0; i < numSets; i++) {
+                // Each call to createTambolaSetOf6 generates a new, unique "full sheet"
+                // where numbers 1-90 are used exactly once across the 6 tickets.
+                const currentSet = createTambolaSetOf6();
+                for (let j = 0; j < 6; j++) {
+                    const ticketId = i * 6 + j + 1;
+                    newTicketsObject[ticketId] = {
+                        id: ticketId,
+                        numbers: currentSet[j],
+                        is_sold: false,
+                        owner_name: null, owner_name_lower: null, owner_phone: null, agent_uid: null
+                    };
+                }
+            }
+            await db.ref('/tickets').set(newTicketsObject);
+            const successMsg = `${totalTickets} new tickets generated successfully!`;
+            showNotification(successMsg, 'success');
+            await triggerGlobalNotification(successMsg, 'success');
+        }, 50);
+
+    } catch (e) {
+        showNotification("Error generating tickets: " + e.message, 'error');
+    }
+}
+
+function createTambolaSetOf6() {
+    const shuffle = (arr) => {
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+    };
+    const colCounts = [
+        [1, 2, 1, 2, 1, 2, 2, 2, 2], [1, 1, 2, 1, 2, 2, 2, 2, 2],
+        [1, 1, 2, 2, 2, 1, 2, 3, 1], [2, 2, 1, 2, 1, 2, 1, 1, 3],
+        [2, 2, 2, 1, 2, 1, 2, 1, 2], [2, 2, 2, 2, 2, 2, 1, 1, 1]
+    ];
+    const ticketLayouts = [];
+    for (let t = 0; t < 6; t++) {
+        const layout = Array(3).fill(0).map(() => Array(9).fill(0));
+        const ticketColCounts = colCounts[t];
+        for (let c = 0; c < 9; c++) {
+            const rowsToPlace = shuffle([0, 1, 2]).slice(0, ticketColCounts[c]);
+            for (const r of rowsToPlace) { layout[r][c] = 1; }
+        }
+        let isBalanced = false;
+        while (!isBalanced) {
+            const rowCounts = layout.map(row => row.reduce((a, b) => a + b, 0));
+            const overfullRows = rowCounts.map((c, i) => c > 5 ? i : -1).filter(i => i !== -1);
+            const underfullRows = rowCounts.map((c, i) => c < 5 ? i : -1).filter(i => i !== -1);
+            if (overfullRows.length === 0 && underfullRows.length === 0) { isBalanced = true; continue; }
+            const rOver = overfullRows[0], rUnder = underfullRows[0];
+            const swappableCols = [];
+            for (let c = 0; c < 9; c++) {
+                if (layout[rOver][c] === 1 && layout[rUnder][c] === 0) { swappableCols.push(c); }
+            }
+            if (swappableCols.length > 0) {
+                const colToSwap = swappableCols[Math.floor(Math.random() * swappableCols.length)];
+                layout[rOver][colToSwap] = 0;
+                layout[rUnder][colToSwap] = 1;
+            }
+        }
+        ticketLayouts.push(layout);
+    }
+    const numberPools = [
+        shuffle(Array.from({ length: 9 }, (_, i) => i + 1)),   shuffle(Array.from({ length: 10 }, (_, i) => i + 10)),
+        shuffle(Array.from({ length: 10 }, (_, i) => i + 20)), shuffle(Array.from({ length: 10 }, (_, i) => i + 30)),
+        shuffle(Array.from({ length: 10 }, (_, i) => i + 40)), shuffle(Array.from({ length: 10 }, (_, i) => i + 50)),
+        shuffle(Array.from({ length: 10 }, (_, i) => i + 60)), shuffle(Array.from({ length: 10 }, (_, i) => i + 70)),
+        shuffle(Array.from({ length: 11 }, (_, i) => i + 80))
+    ];
+    const finalTickets = Array(6).fill(0).map(() => Array(3).fill(0).map(() => Array(9).fill(0)));
+    for (let c = 0; c < 9; c++) {
+        for (let t = 0; t < 6; t++) {
+            for (let r = 0; r < 3; r++) {
+                if (ticketLayouts[t][r][c] === 1) { finalTickets[t][r][c] = numberPools[c].pop(); }
+            }
+        }
+    }
+    for (let t = 0; t < 6; t++) {
+        for (let c = 0; c < 9; c++) {
+            const colValues = [];
+            for (let r = 0; r < 3; r++) {
+                if (finalTickets[t][r][c] !== 0) { colValues.push(finalTickets[t][r][c]); }
+            }
+            colValues.sort((a, b) => a - b);
+            let valueIndex = 0;
+            for (let r = 0; r < 3; r++) {
+                if (finalTickets[t][r][c] !== 0) { finalTickets[t][r][c] = colValues[valueIndex++]; }
+            }
+        }
+    }
+    return finalTickets;
+}
+
+
+function createListPDF(title, headers, dataRows, filename) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    
+    doc.setFontSize(18);
+    doc.text(title, 105, 15, { align: 'center' });
+    doc.setFontSize(10);
+    doc.text(new Date().toLocaleString(), 105, 22, { align: 'center' });
+
+    const startY = 35;
+    const colPositions = [15, 40, 120]; 
+
+    doc.setFontSize(12);
+    doc.setFont(undefined, 'bold');
+    headers.forEach((header, i) => {
+        doc.text(header, colPositions[i], startY);
+    });
+
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    let y = startY + 7;
+
+    dataRows.forEach(row => {
+        if (y > 280) { 
+            doc.addPage();
+            y = 15;
+        }
+        row.forEach((cell, i) => {
+            doc.text(String(cell), colPositions[i], y);
+        });
+        y += 7;
+    });
+
+    doc.save(filename);
+}
+
+async function downloadPreviousGameTicketList() {
+    try {
+        const snapshot = await db.ref('lastGame/tickets').once('value');
+        const prevTicketsObject = snapshot.val();
+        
+        if (!prevTicketsObject || Object.keys(prevTicketsObject).length === 0) {
+            return showNotification('No archived ticket data found.', 'info');
+        }
+
+        const prevTickets = Object.values(prevTicketsObject);
+        const usersSnapshot = await db.ref('users').once('value');
+        const users = usersSnapshot.val();
+        const userMap = new Map(Object.entries(users || {}).map(([uid, data]) => [uid, data]));
+
+        const dataRows = prevTickets.map(ticket => {
+            const agent = ticket.agent_uid ? userMap.get(ticket.agent_uid) : null;
+            const agentName = agent ? agent.name : 'Direct/Admin';
+            return [ticket.id, ticket.owner_name, agentName];
+        });
+
+        createListPDF(
+            'Previous Game - Sold Tickets',
+            ['Ticket ID', 'Owner Name', 'Booked By'],
+            dataRows,
+            'Previous-Game-Tickets.pdf'
+        );
+
+    } catch (e) {
+        showNotification('Error downloading previous ticket list: ' + e.message, 'error');
+    }
+}
+
+function downloadCurrentSoldTickets() {
+    const soldTickets = allTicketsData.filter(t => t.is_sold);
+    if (soldTickets.length === 0) {
+        return showNotification('No tickets have been sold in the current game yet.', 'info');
+    }
+
+    const userMap = new Map(allUsersData.map(u => [u.uid, u]));
+
+    const dataRows = soldTickets.map(ticket => {
+        const agent = ticket.agent_uid ? userMap.get(ticket.agent_uid) : null;
+        const agentName = agent ? agent.name : 'Direct/Admin';
+        return [ticket.id, ticket.owner_name, agentName];
+    });
+
+    createListPDF(
+        'Current Game - Sold Tickets',
+        ['Ticket ID', 'Owner Name', 'Booked By'],
+        dataRows,
+        'Current-Sold-Tickets.pdf'
+    );
+}
+
+async function downloadTicketAsPDF(ticketId) {
+    const { jsPDF } = window.jspdf;
+    const ticketData = allTicketsData.find(t => t.id === ticketId);
+    if (!ticketData) return showNotification('Ticket data not found.', 'error');
+
+    const doc = new jsPDF();
+    const cellWidth = 20;
+    const cellHeight = 15;
+    const startX = 15;
+    const startY = 20;
+
+    doc.setFontSize(16);
+    doc.text(`Housie Ticket #${ticketData.id}`, startX, startY);
+    if(ticketData.is_sold){
+        doc.setFontSize(10);
+        doc.text(`Owner: ${ticketData.owner_name} (${ticketData.owner_phone})`, startX, startY + 7);
+    }
+
+    doc.setFontSize(14);
+    for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 9; col++) {
+            const x = startX + col * cellWidth;
+            const y = startY + 15 + row * cellHeight;
+            doc.rect(x, y, cellWidth, cellHeight);
+            const num = ticketData.numbers[row][col];
+            if (num > 0) {
+                doc.text(String(num), x + cellWidth / 2, y + cellHeight / 2, { align: 'center', baseline: 'middle' });
+            }
+        }
+    }
+
+    doc.save(`Housie-Ticket-${ticketId}.pdf`);
+    showNotification(`Downloading PDF for ticket #${ticketId}.`, 'success');
+}
+
+async function downloadWinnersPDF() {
+    if (Object.keys(knownWinners).length === 0) {
+        showNotification("No winners to download yet.", "info");
+        return;
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+
+    doc.setFontSize(18);
+    doc.text("Housie Game - Winners List", 105, 15, { align: 'center' });
+    doc.setFontSize(10);
+    doc.text(new Date().toLocaleString(), 105, 20, { align: 'center' });
+
+    const tableData = Object.entries(knownWinners).flatMap(([dividend, winnerArray]) => 
+        winnerArray.map(winner => [
+            dividend,
+            winner.name,
+            String(winner.ticketId)
+        ])
+    );
+    
+    let y = 35;
+    doc.setFontSize(12);
+    doc.setFont(undefined, 'bold');
+    doc.text("Dividend", 15, y);
+    doc.text("Winner Name", 80, y);
+    doc.text("Ticket ID", 150, y);
+    doc.setFont(undefined, 'normal');
+    y += 7;
+
+    tableData.forEach(row => {
+        doc.text(row[0], 15, y);
+        doc.text(row[1], 80, y);
+        doc.text(row[2], 150, y);
+        y += 7;
+        if (y > 280) {
+            doc.addPage();
+            y = 15;
+        }
+    });
+
+    doc.save("Housie-Winners.pdf");
+}
+
+function updateRunGameUI(gameState) {
+    if(document.getElementById('runGameWindowDiv').classList.contains('active')){
+        const isRunning = gameState.isGameRunning || false;
+        document.getElementById('callStatusInp').value = isRunning ? 'on' : 'off';
+    }
+}
+
+function searchTicketAdmin() {
+    const searchTerm = document.getElementById('adminTicketSearchInp').value.trim();
+    if (!searchTerm) return;
+    
+    let ticketsToDisplay = [];
+    const searchNumber = parseInt(searchTerm, 10);
+
+    if (!isNaN(searchNumber) && searchTerm.toString().match(/^\d+$/)) {
+        const initialTicket = allTicketsData.find(t => t.id === searchNumber && t.is_sold);
+        if (initialTicket) {
+            ticketsToDisplay = allTicketsData.filter(t => t.is_sold && t.owner_phone === initialTicket.owner_phone);
+        }
+    } else {
+        const lowerCaseSearchTerm = searchTerm.toLowerCase();
+        ticketsToDisplay = allTicketsData.filter(t => t.is_sold &&
+            ((t.owner_name_lower || '').includes(lowerCaseSearchTerm) || (t.owner_phone || '').includes(lowerCaseSearchTerm))
+        );
+    }
+    
+    if (ticketsToDisplay.length > 0) {
+        const ownerPhone = ticketsToDisplay[0].owner_phone;
+        const ownerName = ticketsToDisplay[0].owner_name;
+
+        if (adminDisplayedSearchPhones.has(ownerPhone)) {
+            showNotification(`${ownerName}'s tickets are already displayed.`, 'info');
+            return;
+        }
+        adminDisplayedSearchPhones.add(ownerPhone);
+
+        const groupWrapper = document.createElement('div');
+        groupWrapper.className = 'sheet-view';
+        groupWrapper.dataset.phone = ownerPhone;
+        
+        let ticketsHTML = '';
+        ticketsToDisplay.sort((a, b) => a.id - b.id).forEach(ticket => {
+            let gridHTML;
+            if (ticket && Array.isArray(ticket.numbers) && ticket.numbers.length > 0) {
+                 gridHTML = ticket.numbers.flat().map(n =>
+                    `<div class="ticket-num ${n > 0 ? '' : 'empty'}" data-num="${n}">${n > 0 ? n : ''}</div>`
+                ).join('');
+            } else {
+                gridHTML = '<p style="text-align:center; padding: 1rem; color: red;">Visual data missing.</p>';
+            }
+            
+            ticketsHTML += `<div class="ticket-view" data-ticket-id="${ticket.id}">
+                        <div class="ticket-header">Ticket #${ticket.id}</div>
+                        <div class="ticket-grid">${gridHTML}</div>
+                    </div>`;
+        });
+        
+        groupWrapper.innerHTML = `
+            <div class="sheet-header" style="position: relative; padding-right: 30px;">
+                <span>${ownerName} - ${ownerPhone}</span>
+                <button class="clear-search-btn" style="background: #e74c3c;" onclick="clearAdminSearchResult('${ownerPhone}')" title="Clear this result">&times;</button>
+            </div>
+            <div class="sheet-content">${ticketsHTML}</div>`;
+            
+        document.getElementById('adminTicketDisplayArea').prepend(groupWrapper);
+        updateAdminDisplayedTickets();
+    } else {
+        showNotification('No tickets found for that search term.', 'error');
+    }
+}
+
+function clearAdminSearchResult(phone) {
+    const group = document.querySelector(`#adminTicketDisplayArea .sheet-view[data-phone="${phone}"]`);
+    if (group) group.remove();
+    adminDisplayedSearchPhones.delete(phone);
+}
+
+function updateAdminDisplayedTickets() {
+    document.querySelectorAll('#adminTicketDisplayArea .ticket-view').forEach(ticketView => {
+        ticketView.querySelectorAll('.ticket-num[data-num]').forEach(cell => {
+            const num = parseInt(cell.dataset.num, 10);
+            if (num > 0) {
+                const isCalled = currentCalledNumbers.includes(num);
+                cell.classList.toggle('ticked', isCalled);
+                cell.classList.remove('last-called-highlight');
+                if (num === lastAnnouncedNumber) {
+                    cell.classList.add('last-called-highlight');
+                }
+            }
+        });
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    generateNumberBoard();
+    bindEventListeners();
+    gsap.to('.top-header, .bottom-nav, .panel', { y: 0, opacity: 1, duration: 1.2, stagger: 0.1, ease: "expo.out" });
+
+    setTimeout(() => {
+        showPopup('firstVisitPopup');
+    }, 1500);
+});
+</script>
+
+	<script>
+(function(){
+    function _0x1a3c(_0x12, _0x34){return _0x1a3c=_0x34?function(_0x56){return _0x56.toString(36)}:function(_0x56){return _0x56};return _0x1a3c(_0x12,_0x34);}
+    document['addEventListener']('contextmenu',function(_0x1){_0x1['preventDefault']();});
+    document['addEventListener']('keydown',function(_0x2){
+        if(_0x2['key']==='F12'){_0x2['preventDefault']();}
+        if((_0x2['ctrlKey']&&_0x2['shiftKey']&&['I','J','C']['includes'](_0x2['key']['toUpperCase']()))||
+           (_0x2['ctrlKey']&&['U','S']['includes'](_0x2['key']['toUpperCase']()))){
+            _0x2['preventDefault']();
+        }
+    });
+})();
+	</script>
+
+</body>
+</html>    }
 }
 
 function handleRouting() {
